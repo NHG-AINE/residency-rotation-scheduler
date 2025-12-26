@@ -12,6 +12,7 @@ from server.utils import (
     variants_for_base_ci,
     CORE_REQUIREMENTS,
     CCR_POSTINGS,
+    BALANCING_GROUPS
 )
 
 
@@ -882,12 +883,12 @@ def allocate_timetable(
             model.Add(rccm_blocks == rccm_needed)
 
     # Hard Constraint 16: ensure postings are not imbalanced within each half of the year
-    for p in posting_codes:
+    for group_id, group_postings in BALANCING_GROUPS.items():
         # get the balance deviation set by the user 
-        balancing_deviation = balancing_deviation = balancing_deviations.get(p, 0)
+        balancing_deviation = balancing_deviations.get(group_id, 0)
 
         # get the max residents allowed, to ensure the balance deviation does not exceed it
-        max_residents = posting_info[p]["max_residents"] 
+        max_residents = sum(posting_info[p]["max_residents"] for p in group_postings)
 
         # ensure balancing deviation is within posting capacity
         delta = max(0, min(balancing_deviation, max_residents))
@@ -905,30 +906,27 @@ def allocate_timetable(
             num_assigned = model.NewIntVar(
                 0, len(residents), f"num_assigned_{to_snake_case(p)}_{b}"
             )
-            assigned = sum(x[r["mcr"]][p][b] for r in residents)
-            reserved = leave_quota_usage.get(p, {}).get(b, 0)
+            assigned = sum(
+                x[r["mcr"]][p][b] 
+                for r in residents
+                for p in group_postings
+            )
+            reserved = sum(leave_quota_usage.get(p, {}).get(b, 0) for p in group_postings)
 
             # count leave-reserved slots as occupied so balancing sees the reduced headcount
             model.Add(num_assigned == assigned + reserved)
             assignments_per_block[b] = num_assigned
 
-        # First half of the year (blocks 1-6)
-        first_half_assignments = [assignments_per_block[b] for b in early_blocks]
-        if first_half_assignments:
-            min_h1 = model.NewIntVar(0, len(residents), f"min_h1_{to_snake_case(p)}")
-            max_h1 = model.NewIntVar(0, len(residents), f"max_h1_{to_snake_case(p)}")
-            model.AddMinEquality(min_h1, first_half_assignments)
-            model.AddMaxEquality(max_h1, first_half_assignments)
-            model.Add(max_h1 - min_h1 <= delta)
-
-        # Second half of the year (blocks 7-12)
-        second_half_assignments = [assignments_per_block[b] for b in late_blocks]
-        if second_half_assignments:
-            min_h2 = model.NewIntVar(0, len(residents), f"min_h2_{to_snake_case(p)}")
-            max_h2 = model.NewIntVar(0, len(residents), f"max_h2_{to_snake_case(p)}")
-            model.AddMinEquality(min_h2, second_half_assignments)
-            model.AddMaxEquality(max_h2, second_half_assignments)
-            model.Add(max_h2 - min_h2 <= delta)
+        for half_name, half_block in {
+            "h1": early_blocks, # First half of the year (blocks 1-6)
+            "h2": late_blocks   # Second half of the year (blocks 7-12)
+        }.items():
+            assignments = [assignments_per_block[b] for b in half_block]
+            min_in_half = model.NewIntVar(0, len(residents), f"min_{half_name}_{to_snake_case(group_id)}")
+            max_in_half = model.NewIntVar(0, len(residents), f"max_{half_name}_{to_snake_case(group_id)}")
+            model.AddMinEquality(min_in_half, assignments)
+            model.AddMaxEquality(max_in_half, assignments)
+            model.Add(max_in_half - min_in_half <= delta)
 
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
@@ -1618,7 +1616,7 @@ def allocate_timetable(
             "resident_sr_preferences": resident_sr_preferences,
             "postings": postings,
             "weightages": weightages,
-            "balancing_deviations": balancing_deviation,
+            "balancing_deviations": balancing_deviations,
             "resident_leaves": resident_leaves or [],
             "solver_solution": {
                 "entries": solution_entries,
