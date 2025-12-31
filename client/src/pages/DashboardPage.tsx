@@ -12,6 +12,7 @@ import type {
 import CohortStatistics from "../components/CohortStatistics";
 import ErrorAlert from "../components/ErrorAlert";
 import FileUpload from "../components/FileUpload";
+import PostingBalancingDeviationSelector from "@/components/PostingBalancingDeviationSelector";
 import PostingUtilTable from "../components/PostingUtilTable";
 import ResidentDropdown from "../components/ResidentDropdown";
 import ResidentTimetable from "../components/ResidentTimetable";
@@ -48,6 +49,7 @@ const HomePage: React.FC = () => {
     elective_shortfall_penalty: 10,
     core_shortfall_penalty: 10,
   });
+  const [postingDeviation, setPostingDeviation] = useState<Record<string, number>>({});
   const [maxTimeInMinutes, setMaxTimeInMinutes] = useState<string>("20");
   const [pinnedMcrs, setPinnedMcrs] = useState<Set<string>>(() => {
     try {
@@ -95,6 +97,7 @@ const HomePage: React.FC = () => {
     if (csvFiles.postings) formData.append("postings", csvFiles.postings);
     // include weightages and pinned residents
     formData.append("weightages", JSON.stringify(weightages));
+    formData.append("balancing_deviations", JSON.stringify(postingDeviation));
     formData.append("pinned_mcrs", JSON.stringify(Array.from(pinnedMcrs.values())));
     formData.append("max_time_in_minutes", maxTimeInMinutes.toString());
 
@@ -228,50 +231,55 @@ const HomePage: React.FC = () => {
       {/* weightage selector */}
       <WeightageSelector value={weightages} setValue={setWeightages} />
 
-      <div className="flex flex-col sm:flex-row gap-4">
-        <div className="flex flex-col gap-1 max-w-xs">
-          <Label htmlFor="max-time-in-minutes">
-            Solver time limit (minutes)
-          </Label>
-          <Input
-            id="max-time-in-minutes"
-            type="number"
-            min={1}
-            value={maxTimeInMinutes}
-            onChange={(event) => setMaxTimeInMinutes(event.target.value)}
-            placeholder="e.g. 20"
-          />
-          <span className="text-xs text-gray-600">Default: 20 minutes</span>
-        </div>
+      <PostingBalancingDeviationSelector value={postingDeviation} setValue={setPostingDeviation} />
 
-        <div className="flex flex-col gap-1 max-w-xs">
-          <Label htmlFor="current-academic-year">
-            Planning for Academic Year:
-          </Label>
-          <Input
-            id="current-academic-year"
-            value={currentAcademicYearInput}
-            onChange={(event) =>
-              setCurrentAcademicYearInput(event.target.value)
-            }
-            placeholder="2025/2026"
-            className={cn(
-              "max-w-xs",
-              hasAcademicYearInputError && "border-red-500 visible:ring-red-500"
-            )}
-          />
-          {hasAcademicYearInputError ? (
-            <span className="text-xs text-red-600">
-              Please use the format &quot;YYYY/YYYY&quot;.
-            </span>
-          ) : (
-            currentAcademicYearInput && (
-              <span className="text-xs text-gray-600">
-                Current year planning will align with AY
-                {currentAcademicYearInput.trim()}.
+      <div className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Run Configurations</h2>
+        <div className="flex flex-col sm:flex-row gap-4">
+          <div className="flex flex-col gap-1 max-w-xs">
+            <Label htmlFor="max-time-in-minutes">
+              Solver time limit (minutes)
+            </Label>
+            <Input
+              id="max-time-in-minutes"
+              type="number"
+              min={1}
+              value={maxTimeInMinutes}
+              onChange={(event) => setMaxTimeInMinutes(event.target.value)}
+              placeholder="e.g. 20"
+            />
+            <span className="text-xs text-gray-600">Default: 20 minutes</span>
+          </div>
+
+          <div className="flex flex-col gap-1 max-w-xs">
+            <Label htmlFor="current-academic-year">
+              Planning for Academic Year:
+            </Label>
+            <Input
+              id="current-academic-year"
+              value={currentAcademicYearInput}
+              onChange={(event) =>
+                setCurrentAcademicYearInput(event.target.value)
+              }
+              placeholder="2025/2026"
+              className={cn(
+                "max-w-xs",
+                hasAcademicYearInputError && "border-red-500 visible:ring-red-500"
+              )}
+            />
+            {hasAcademicYearInputError ? (
+              <span className="text-xs text-red-600">
+                Please use the format &quot;YYYY/YYYY&quot;.
               </span>
-            )
-          )}
+            ) : (
+              currentAcademicYearInput && (
+                <span className="text-xs text-gray-600">
+                  Current year planning will align with AY
+                  {currentAcademicYearInput.trim()}.
+                </span>
+              )
+            )}
+          </div>
         </div>
       </div>
 
