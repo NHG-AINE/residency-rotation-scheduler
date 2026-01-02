@@ -41,26 +41,26 @@ const PostingBalancingDeviationSelector: React.FC<
   const configuredPostings = Object.keys(value);
 
   const availablePostings = useMemo(() => {
-    const hasShared =
-      "GRM+MedComm (TTSH)" in value;
-
-    const hasIndividualGRM =
-      "GRM (TTSH)" in value || "MedComm (TTSH)" in value;
+    const hasShared = value.hasOwnProperty("GRM+MedComm (TTSH)");
 
     return postings
       .filter((p) => {
+        // never show already-selected postings
         if (p in value) return false;
 
-        // hide individual GRM/MedComm if shared exists
-        if (hasShared && (p === "GRM (TTSH)" || p === "MedComm (TTSH)"))
+        // never show individual GRM / MedComm
+        if (p === "GRM (TTSH)" || p === "MedComm (TTSH)")
+          return false;
+
+        // if shared already selected, don't show it again
+        if (hasShared && p === "GRM+MedComm (TTSH)")
           return false;
 
         return true;
       })
+      // ensure shared option exists when not selected yet
       .concat(
-        hasShared || hasIndividualGRM
-          ? []
-          : ["GRM+MedComm (TTSH)"]
+        !hasShared ? ["GRM+MedComm (TTSH)"] : []
       )
       .sort();
   }, [postings, value]);
