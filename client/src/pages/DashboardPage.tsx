@@ -19,6 +19,7 @@ import ResidentDropdown from "../components/ResidentDropdown";
 import ResidentTimetable from "../components/ResidentTimetable";
 import WeightageSelector from "../components/WeightageSelector";
 import { generateSampleCSV } from "../lib/generateSampleCSV";
+import { validators } from "../lib/csvValidators";
 
 import {
   cn,
@@ -83,31 +84,46 @@ const HomePage: React.FC = () => {
         return;
       }
 
-      setCsvFiles((prev) => ({ ...prev, [fileType]: file }));
       setError(null);
       setApiResponse(null);
 
-      if (fileType === "postings") {
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (results: { data: any[]; }) => {
-            const codes = Array.from(
-              new Set(
-                results.data
-                  .map((row: any) => row.posting_code)
-                  .filter(Boolean)
-              )
-            );
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        worker: true, // for performance
+        complete: (results: { data: any[] }) => {
+          // validate rows 
+          if (validators[fileType as keyof typeof validators]) {
+            for (let i = 0; i < results.data.length; i++) {
+              const res = validators[fileType as keyof typeof validators](
+                results.data[i],
+                i + 2 // CSV header offset
+              );
+              if (!res.ok) {
+                setError(res.error);
+                return;
+              }
+            }
+          }
 
-            setPostingCodes(codes);
-          },
-          error: () => {
-            setError("Failed to parse postings CSV.");
-          },
-        });
-      }
-    };
+        // extract posting codes
+        if (fileType === "postings") {
+          const codes = Array.from(
+            new Set(
+              results.data
+                .map((row: any) => row.posting_code)
+                .filter(Boolean)
+            )
+          );
+          setPostingCodes(codes);
+        }
+
+        // save file only after validation
+        setCsvFiles((prev) => ({ ...prev, [fileType]: file }));
+      },
+      error: () => setError(`Failed to parse ${fileType} CSV.`),
+    });
+  };
 
   const handleProcessFiles = async () => {
     setIsProcessing(true);
@@ -116,10 +132,10 @@ const HomePage: React.FC = () => {
     const formData = new FormData();
 
     // if CSVs present, always include them, else omit
-    if (csvFiles.residents) formData.append("residents", csvFiles.residents);
-    if (csvFiles.resident_history) formData.append("resident_history", csvFiles.resident_history);
-    if (csvFiles.resident_preferences) formData.append("resident_preferences", csvFiles.resident_preferences);
-    if (csvFiles.postings) formData.append("postings", csvFiles.postings);
+    Object.entries(csvFiles).forEach(([key, file]) => {
+      if (file) formData.append(key, file);
+    })
+    
     // include weightages and pinned residents
     formData.append("weightages", JSON.stringify(weightages));
     formData.append("balancing_deviations", JSON.stringify(postingDeviation));
