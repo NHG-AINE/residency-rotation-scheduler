@@ -118,9 +118,6 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 
 - Do not exceed base core requirements.
 - If already met historically, block further assignments of that base.
-- Extra GM guard:
-  - GM cannot be completed to 6 blocks unless a CCR is present.
-  - Without CCR, GM is capped at 5 blocks.
 
 #### HC6 — Elective repetition
 
