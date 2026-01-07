@@ -26,6 +26,10 @@ Postings include:
 - **Med Onco**: Medical Oncology
 - **PMD**: Palliative Medicine
 - **RAI**: Rheumatology and Immunology
+- **Rehab**: Rehabilitation
+- **Renal**: Renal Medicine
+- **NL**: Neurology
+- **Derm**: Dermatology
 
 ## Overview of posting assignment
 
@@ -117,7 +121,15 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC5 — Core caps (per resident)
 
 - Do not exceed base core requirements.
-- If already met historically, block further assignments of that base.
+  - `GM` and `GRM` can exceed base requirements if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+  | Scenario                | medcomm_flag | GM max | GRM max |
+  | ----------------------- | ------------ | ------ | ------- |
+  | No MedComm              | 0            | 6      | 2       |
+  | MedComm done / assigned | 1            | 12     | 3       |
+
+- If already met historically, block further assignments of that base. 
+  - Exception: `GM` and `GRM` can exceed base requirements (to max of 12 or 3 respectively) if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+- Implies that if a resident has already exceeded the `GM` / `GRM` base cap and has not done `MedComm` historically, then the solver MUST assign `MedComm`.
 
 #### HC6 — Elective repetition
 
