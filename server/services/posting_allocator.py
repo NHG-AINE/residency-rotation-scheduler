@@ -374,6 +374,18 @@ def allocate_timetable(
         for b in blocks:
             # leaves with posting_code reserve capacity; available slots shrink by that amount
             leave_reserved_slots = leave_quota_usage.get(p, {}).get(b, 0)
+
+            if max_residents == 0:
+                # No quota limit → skip the constraint
+                if leave_reserved_slots:
+                    logger.info(
+                        "No quota for posting %s, but %d slot(s) reserved for leave on block %s",
+                        p,
+                        leave_reserved_slots,
+                        b,
+                    )
+                continue
+
             available_capacity = max_residents - leave_reserved_slots
             if available_capacity < 0:
                 logger.warning(
@@ -874,7 +886,11 @@ def allocate_timetable(
         max_residents = sum(posting_info[p]["max_residents"] for p in postings_in_group) 
 
         # ensure balancing deviation is within posting capacity
-        delta = max(0, min(balancing_deviation, max_residents))
+        if max_residents == 0:
+            # 0 means unlimited capacity → do not cap deviation
+            delta = max(0, balancing_deviation)
+        else:
+            delta = max(0, min(balancing_deviation, max_residents))
 
         # update balancing_deviations if delta is non-zero
         if delta > 0:
