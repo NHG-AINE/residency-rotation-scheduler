@@ -100,6 +100,7 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC2 — Posting capacity
 
 - Per-block headcount ≤ `max_residents` minus any slots reserved for leave.
+  - NOTE: If `max_residents=0` in `postings.csv`, it is treated as no quota limit on the maximum number of residents in that posting.
 - `available_capacity = max_residents - leave_reserved_slots`
 - `sum(x[r["mcr"]][p][b] for r in residents) <= available_capacity`
 
