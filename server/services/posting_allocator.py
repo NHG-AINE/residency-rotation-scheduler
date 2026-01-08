@@ -912,6 +912,28 @@ def allocate_timetable(
             model.AddMaxEquality(max_in_half, assignments)
             model.Add(max_in_half - min_in_half <= delta)
 
+    # Hard Constraint 17: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
+    pair_total_per_block = {}
+
+    for b in blocks: 
+        total = model.NewIntVar(0, len(residents), f"pair_total_grm_medcomm_{b}")
+        assigned_sum = (
+            sum(x[r["mcr"]]["GRM (TTSH)"][b] for r in residents) +
+            sum(x[r["mcr"]]["MedComm (TTSH)"][b] for r in residents)
+        )
+        reserved_sum = (
+            leave_quota_usage.get("GRM (TTSH)", {}).get(b, 0) +
+            leave_quota_usage.get("MedComm (TTSH)", {}).get(b, 0)
+        )
+        model.Add(total == assigned_sum + reserved_sum)
+        pair_total_per_block[b] = total
+    
+    reference_block = blocks[0]
+    ref_total = pair_total_per_block[reference_block]
+
+    for b in blocks[1:]:
+        model.Add(pair_total_per_block[b] == ref_total)
+
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
     ###########################################################################
