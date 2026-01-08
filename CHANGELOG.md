@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file. Version numbers follow semantic versioning and dates use `YYYY-MM-DD`.
 
+## [1.0.2] - 2026-01-08
+### Changed
+- Added strict validation functions for each CSV type to verify required columns are present, enforce data type constraints (e.g. integers, booleans), validate value ranges and allowed enums
+    - Added row-specific error messages (e.g. Row X: invalid month_block) to make CSV issues easy to diagnose
+    - Added a check to ensure that in `resident_history` CSV file, the `posting_code` (if any) should be found in `posting_code` from `postings` CSV file. It should not be a `leave_type` or random date.
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/43
+-  Removed user-input balancing deviation for `GRM (TTSH)`, `MedComm (TTSH)`. Added shared monthly quota for `GRM (TTSH)`, `MedComm (TTSH)` instead.
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/53 
+
+### Fixed
+- Removed extra guard in HC5 which was not implemented 
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/47
+- Fixed the interpretation of `max_residents=0` to allow the solver to assign any number of residents to the posting, eg `MedComm (TTSH)` and `RCCM (KTPH)` 
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/50
+- Fixed infeasibility of actual dataset 
+    - Added support for `GM`/`GRM` cap extension when `MedComm (TTSH)` is completed historically or assigned this year.
+    - Fixed solver infeasibility by excluding `MICU`/`RCCM` from HC5 core caps and delegating their totals entirely to HC15.
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/55
+
 ## [1.0.1] - 2026-01-01
 
 ### Added

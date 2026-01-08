@@ -74,7 +74,6 @@ SR_PREFERENCE_ALIASES: Dict[str, str] = {
     "Gap Year": "",
 }
 
-
 def _normalise_sr_preference(value: Any) -> str:
     cleaned = str(value or "").strip()
     if not cleaned:
@@ -268,19 +267,170 @@ async def _read_csv_upload(
             status_code=400, detail=f"[{file_label}] Invalid CSV format: {exc}"
         ) from exc
 
+########################################################################
+# Helpers for validating columns in each CSV type
+########################################################################
+def _require(condition: bool, message: str, label: str) -> None:
+    if not condition:
+        raise HTTPException(
+            status_code=400,
+            detail=f"[{label}] {message}",
+        )
+
+def _require_int_in(
+    value: Any, allowed: List[int], field: str, label: str
+) -> int:
+    parsed = parse_int(value)
+    _require(parsed in allowed, f"{field} must be one of {allowed}", label)
+    return parsed
+
+def _require_int_min(
+    value: Any, min_value: int, field: str, label: str
+) -> int:
+    parsed = parse_int(value)
+    _require(
+        parsed is not None and parsed >= min_value,
+        f"{field} must be ≥ {min_value}",
+        label,
+    )
+    return parsed
+
+def _validate_residents_strict(residents: List[Dict[str, Any]]) -> None:
+    label = CSV_HEADER_SPECS["residents"]["label"]
+
+    for idx, r in enumerate(residents, start=1):
+        mcr = str(r.get("mcr") or "").strip()
+        _require(mcr.startswith("M"), f"Row {idx}: mcr must start with 'M'", label)
+        _require(
+            isinstance(r.get("name"), str) and r["name"].strip(),
+            f"Row {idx}: name must be a non-empty string",
+            label,
+        )
+        _require_int_in(
+            r.get("resident_year"),
+            [1, 2, 3],
+            f"Row {idx}: resident_year",
+            label,
+        )
+        _require_int_min(
+            r.get("career_blocks_completed"),
+            0,
+            f"Row {idx}: career_blocks_completed",
+            label,
+        )
+
+def _validate_postings_strict(postings: List[Dict[str, Any]]) -> None:
+    label = CSV_HEADER_SPECS["postings"]["label"]
+
+    for idx, p in enumerate(postings, start=1):
+        code = str(p.get("posting_code") or "").strip()
+        _require(
+            "(" in code and ")" in code,
+            f"Row {idx}: posting_code must contain '(' and ')'",
+            label,
+        )
+        _require(
+            p.get("posting_type") in {"core", "elective"},
+            f"Row {idx}: posting_type must be 'core' or 'elective'",
+            label,
+        )
+        _require_int_min(
+            p.get("max_residents"),
+            0,
+            f"Row {idx}: max_residents",
+            label,
+        )
+        _require_int_min(
+            p.get("required_block_duration"),
+            1,
+            f"Row {idx}: required_block_duration",
+            label,
+        )
+
+def _validate_preferences_strict(
+    prefs: List[Dict[str, Any]], posting_codes: set
+) -> None:
+    label = CSV_HEADER_SPECS["resident_preferences"]["label"]
+
+    for idx, r in enumerate(prefs, start=1):
+        mcr = str(r.get("mcr") or "").strip()
+        _require(mcr.startswith("M"), f"Row {idx}: invalid mcr", label)
+        _require_int_in(
+            r.get("preference_rank"),
+            [1, 2, 3, 4, 5],
+            f"Row {idx}: preference_rank",
+            label,
+        )
+        posting_code = str(r.get("posting_code") or "").strip()
+        if posting_code:
+            _require(
+                posting_code in posting_codes,
+                f"Row {idx}: posting_code '{posting_code}' not found in postings CSV",
+                label,
+            )
+
+def _validate_resident_history_strict(
+    history: List[Dict[str, Any]], posting_codes: set
+) -> None:
+    label = CSV_HEADER_SPECS["resident_history"]["label"]
+
+    for idx, r in enumerate(history, start=1):
+        mcr = str(r.get("mcr") or "").strip()
+        _require(mcr.startswith("M"), f"Row {idx}: invalid mcr", label)
+        _require_int_min(r.get("year"), 0, f"Row {idx}: year", label)
+        month = _require_int_in(
+            r.get("month_block"),
+            list(range(1, 13)),
+            f"Row {idx}: month_block",
+            label,
+        )
+        _require_int_in(
+            r.get("career_block"),
+            list(range(0, 37)),
+            f"Row {idx}: career_block",
+            label,
+        )
+        posting_code = str(r.get("posting_code") or "").strip()
+        is_leave = r.get("is_leave")
+
+        # Allow empty posting_code if on leave; otherwise must exist in posting_codes
+        if posting_code:
+            _require(
+                posting_code in posting_codes,
+                f"Row {idx}: posting_code '{posting_code}' not found in postings CSV",
+                label,
+            )
+        elif not posting_code and is_leave != 1:
+            _require(
+                False,
+                f"Row {idx}: posting_code cannot be empty when not on leave",
+                label,
+            )
+            
+        leave_type = str(r.get("leave_type") or "").strip()
+        if is_leave == 0:
+            _require(
+                leave_type == "0" or not leave_type,
+                f"Row {idx}: leave_type must be 0 when is_leave=0",
+                label,
+            )
+        else:
+            _require(
+                leave_type in {"LOA", "MOPEX", "NS"},
+                f"Row {idx}: leave_type must be LOA or MOPEX or NS",
+                label,
+            )
 
 ########################################################################
 # Formatting functions for each CSV type
 ########################################################################
-
-
 def _format_residents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     formatted = []
     for row in records:
         career_blocks = parse_int(
             row.get("career_blocks_completed") or row.get("careerBlocksCompleted")
         )
-        resident_year = parse_int(row.get("resident_year")) or 0
+        resident_year = parse_int(row.get("resident_year"))
         formatted.append(
             {
                 "mcr": str(row.get("mcr") or "").strip(),
@@ -358,7 +508,7 @@ def _format_preferences(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         formatted.append(
             {
                 "mcr": str(row.get("mcr") or "").strip(),
-                "preference_rank": parse_int(row.get("preference_rank")) or 0,
+                "preference_rank": parse_int(row.get("preference_rank")),
                 "posting_code": posting_code,
             }
         )
@@ -562,6 +712,12 @@ async def preprocess_initial_upload(form: FormData) -> Dict[str, Any]:
     resident_sr_preferences = _format_sr_preferences_from_preferences(prefs_csv)
     postings = _format_postings(postings_csv)
     resident_leaves = _derive_resident_leaves_from_history(resident_history)
+
+    posting_codes = {p["posting_code"] for p in postings if p["posting_code"]}
+    _validate_residents_strict(residents)
+    _validate_postings_strict(postings)
+    _validate_preferences_strict(resident_preferences, posting_codes)
+    _validate_resident_history_strict(resident_history, posting_codes)
 
     _validate_no_duplicate_mcrs(residents)
     _validate_no_duplicate_posting_codes(postings)

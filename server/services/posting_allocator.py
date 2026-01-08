@@ -12,7 +12,6 @@ from server.utils import (
     variants_for_base_ci,
     CORE_REQUIREMENTS,
     CCR_POSTINGS,
-    BALANCING_GROUPS
 )
 
 
@@ -374,6 +373,18 @@ def allocate_timetable(
         for b in blocks:
             # leaves with posting_code reserve capacity; available slots shrink by that amount
             leave_reserved_slots = leave_quota_usage.get(p, {}).get(b, 0)
+
+            if max_residents == 0:
+                # No quota limit → skip the constraint
+                if leave_reserved_slots:
+                    logger.info(
+                        "No quota for posting %s, but %d slot(s) reserved for leave on block %s",
+                        p,
+                        leave_reserved_slots,
+                        b,
+                    )
+                continue
+
             available_capacity = max_residents - leave_reserved_slots
             if available_capacity < 0:
                 logger.warning(
@@ -474,11 +485,65 @@ def allocate_timetable(
             model.Add(ccr_runs == 0)
 
     # Hard Constraint 5: Ensure core postings are not over-assigned to each resident
+    # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
+    HC5_SIMPLE_CORES = {"CVM", "ED", "NL"}
+    HC5_GM_GRM = {"GM", "GRM"}
+
+    GM_GRM_CAPS = {
+        0: {"GM": CORE_REQUIREMENTS["GM"], "GRM": CORE_REQUIREMENTS["GRM"]},
+        1: {"GM": 12, "GRM": 3},  # with MedComm
+    }
+
+    needs_medcomm = {}
+    medcomm_flag = {}
+
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
 
-        # get core blocks completed
+        core_completed = get_core_blocks_completed(
+            resident_progress, posting_info
+        )
+
+        # Detect residents who already exceeded base GM/GRM caps
+        needs_medcomm[mcr] = (
+            core_completed.get("GM", 0) > GM_GRM_CAPS[0]["GM"]
+            or core_completed.get("GRM", 0) > GM_GRM_CAPS[0]["GRM"]
+        )
+
+        # MedComm flag: true if completed historically or assigned this year
+        medcomm_flag[mcr] = model.NewBoolVar(f"medcomm_flag[{mcr}]")
+
+        if needs_medcomm[mcr]:
+            # Must unlock higher GM/GRM caps
+            model.Add(medcomm_flag[mcr] == 1)
+
+        # Historical MedComm completion
+        medcomm_done_historically = int(
+            resident_progress
+            .get("MedComm (TTSH)", {})
+            .get("is_completed", False)
+        )
+
+        if medcomm_done_historically:
+            model.Add(medcomm_flag[mcr] == 1)
+        else:
+            medcomm_assigned = sum(
+                x[mcr]["MedComm (TTSH)"][b] for b in blocks
+            )
+
+            # medcomm_flag == 1  ⇔  at least one MedComm assigned
+            model.Add(medcomm_assigned >= medcomm_flag[mcr])
+            model.Add(medcomm_assigned >= 1).OnlyEnforceIf(medcomm_flag[mcr])
+
+    for resident in residents:
+        mcr = resident["mcr"]
+        resident_progress = posting_progress.get(mcr, {})
+
+        # Flag: MedComm completed historically OR assigned in any block this year
+        flag = medcomm_flag[mcr]
+
+        # get core blocks completed historically
         core_blocks_completed_map = get_core_blocks_completed(
             resident_progress, posting_info
         )
@@ -493,10 +558,33 @@ def allocate_timetable(
                 for b in blocks
             )
 
-            if blocks_completed >= required_blocks:
-                model.Add(assigned_blocks == 0)
+            # extended caps for GM / GRM if medcomm present
+            if base_posting in HC5_GM_GRM:
+                cap_no_medcomm = GM_GRM_CAPS[0][base_posting]
+                cap_with_medcomm = GM_GRM_CAPS[1][base_posting]
+
+                model.Add(
+                    blocks_completed + assigned_blocks <= cap_no_medcomm
+                ).OnlyEnforceIf(flag.Not())
+                model.Add(
+                    blocks_completed + assigned_blocks <= cap_with_medcomm
+                ).OnlyEnforceIf(flag)
+
+            # simple capped cores
+            elif base_posting in HC5_SIMPLE_CORES:
+                if blocks_completed >= required_blocks:
+                    # Requirement already met → block further assignment
+                    model.Add(assigned_blocks == 0)
+                else:
+                    model.Add(
+                        blocks_completed + assigned_blocks <= required_blocks
+                    )
+
+            # MICU / RCCM
             else:
-                model.Add(blocks_completed + assigned_blocks <= required_blocks)
+                # Intentionally not capped here.
+                # Governed exclusively by HC15 (packs, stages, contiguity).
+                pass
 
     # Hard Constraint 6: Prevent residents from repeating the same elective regardless of hospital
     for resident in residents:
@@ -852,33 +940,25 @@ def allocate_timetable(
             model.Add(rccm_blocks == rccm_needed)
 
     # Hard Constraint 16: ensure postings are not imbalanced within each half of the year
-    balancing_keys = set(posting_codes)
-
-    # remove postings that belong to a group
-    for members in BALANCING_GROUPS.values():
-        balancing_keys -= set(members)
-
-    # add group keys
-    balancing_keys |= set(BALANCING_GROUPS.keys())
-
-    for key in balancing_keys:
-        if key in BALANCING_GROUPS:
-            postings_in_group = BALANCING_GROUPS[key]
-        else:
-            postings_in_group = [key]
-
+    for p in posting_codes:
+        if p == "GRM (TTSH)" or p == "MedComm (TTSH)":
+            continue
         # get the balance deviation set by the user 
-        balancing_deviation = balancing_deviations.get(key, 0)
+        balancing_deviation = balancing_deviations.get(p, 0)
 
-        # get the max residents allowed, to ensure the balance deviation does not exceed it
-        max_residents = sum(posting_info[p]["max_residents"] for p in postings_in_group) 
+        # get the max residents allowed, to ensure the balancing deviation does not exceed it
+        max_residents = posting_info[p]["max_residents"] 
 
         # ensure balancing deviation is within posting capacity
-        delta = max(0, min(balancing_deviation, max_residents))
+        if max_residents == 0:
+            # 0 means unlimited capacity → do not cap deviation
+            delta = max(0, balancing_deviation)
+        else:
+            delta = max(0, min(balancing_deviation, max_residents))
 
         # update balancing_deviations if delta is non-zero
         if delta > 0:
-            balancing_deviations[key] = delta
+            balancing_deviations[p] = delta
 
         # number of residents assigned per month should be balanced across the months it is active in
         # handled independently for each half of the year
@@ -889,15 +969,8 @@ def allocate_timetable(
             num_assigned = model.NewIntVar(
                 0, len(residents), f"num_assigned_{to_snake_case(p)}_{b}"
             )
-            assigned = sum(
-                x[r["mcr"]][p][b] 
-                for r in residents
-                for p in postings_in_group
-            )
-            reserved = sum(
-                leave_quota_usage.get(p, {}).get(b, 0)
-                for p in postings_in_group
-            )
+            assigned = sum(x[r["mcr"]][p][b] for r in residents)
+            reserved = leave_quota_usage.get(p, {}).get(b, 0)
 
             # count leave-reserved slots as occupied so balancing sees the reduced headcount
             model.Add(num_assigned == assigned + reserved)
@@ -907,12 +980,45 @@ def allocate_timetable(
             "h1": early_blocks, # First half of the year (blocks 1-6)
             "h2": late_blocks   # Second half of the year (blocks 7-12)
         }.items():
-            assignments = [assignments_per_block[b] for b in half_block]
-            min_in_half = model.NewIntVar(0, len(residents), f"min_{half_name}_{to_snake_case(key)}")
-            max_in_half = model.NewIntVar(0, len(residents), f"max_{half_name}_{to_snake_case(key)}")
+            assignments = [assignments_per_block[b] for b in half_block if b in assignments_per_block]
+            if not assignments:
+                continue
+            min_in_half = model.NewIntVar(0, len(residents), f"min_{half_name}_{to_snake_case(p)}")
+            max_in_half = model.NewIntVar(0, len(residents), f"max_{half_name}_{to_snake_case(p)}")
             model.AddMinEquality(min_in_half, assignments)
             model.AddMaxEquality(max_in_half, assignments)
             model.Add(max_in_half - min_in_half <= delta)
+
+    # Hard Constraint 17: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
+    grm_cap = posting_info["GRM (TTSH)"]["max_residents"]
+    medcomm_cap = posting_info["MedComm (TTSH)"]["max_residents"]
+
+    # Handle unlimited capacity (0 = unlimited)
+    if grm_cap == 0 or medcomm_cap == 0:
+        max_pair_capacity = len(residents)
+    else:
+        max_pair_capacity = grm_cap + medcomm_cap
+
+    pair_total_per_block = {}
+
+    for b in blocks: 
+        total = model.NewIntVar(0, max_pair_capacity, f"pair_total_grm_medcomm_{b}")
+        assigned_sum = (
+            sum(x[r["mcr"]]["GRM (TTSH)"][b] for r in residents) +
+            sum(x[r["mcr"]]["MedComm (TTSH)"][b] for r in residents)
+        )
+        reserved_sum = (
+            leave_quota_usage.get("GRM (TTSH)", {}).get(b, 0) +
+            leave_quota_usage.get("MedComm (TTSH)", {}).get(b, 0)
+        )
+        model.Add(total == assigned_sum + reserved_sum)
+        pair_total_per_block[b] = total
+    
+    reference_block = blocks[0]
+    ref_total = pair_total_per_block[reference_block]
+
+    for b in blocks[1:]:
+        model.Add(pair_total_per_block[b] == ref_total)
 
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
