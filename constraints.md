@@ -189,11 +189,14 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC16 — Balancing within halves and balancing deviation per posting 
 - Within blocks 1-6 and within blocks 7-12, the user can optionally input how much imbalance is allowed between the maximum and minimum number of residents assigned across 6 blocks. 
   - 0 <= (max - min) <= deviation
-  - GRM (TTSH) and MedComm (TTSH) share the same balancing deviation and quota.
-    - GRM (TTSH) and MedComm (TTSH) are treated as a single balancing group.
-    - Balancing is enforced on the sum of individual assignments across the group.
-- Else, by default (no input on the balancing deviation), the imbalance is 0. Resident counts per block are equal within blocks 1–6 and within blocks 7–12 (leave-reserved slots are treated as occupied).
+- Else, by default (no input on the balancing deviation), the imbalance is 0. 
+  - Resident counts per block are equal within blocks 1–6 and within blocks 7–12 (leave-reserved slots are treated as occupied).
 - `balancing_deviations`
+- Some postings always have 0 balancing deviation, hence are excluded from the list of postings in the dropdown. 
+
+#### HC17 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)
+- Across each month block, the **total** number of residents assigned to both `GRM (TTSH)` and `MedComm (TTSH)` is equal.
+- This shared quota is decided by the solver. 
 
 ## Soft Constraints
 

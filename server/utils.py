@@ -302,7 +302,3 @@ MONTH_LABELS = [
     "May",
     "Jun",
 ]
-
-BALANCING_GROUPS = {
-    "GRM+MedComm (TTSH)": ["GRM (TTSH)", "MedComm (TTSH)"],
-}
