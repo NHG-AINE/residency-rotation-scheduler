@@ -485,11 +485,65 @@ def allocate_timetable(
             model.Add(ccr_runs == 0)
 
     # Hard Constraint 5: Ensure core postings are not over-assigned to each resident
+    # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
+    HC5_SIMPLE_CORES = {"CVM", "ED", "NL"}
+    HC5_GM_GRM = {"GM", "GRM"}
+
+    GM_GRM_CAPS = {
+        0: {"GM": CORE_REQUIREMENTS["GM"], "GRM": CORE_REQUIREMENTS["GRM"]},
+        1: {"GM": 12, "GRM": 3},  # with MedComm
+    }
+
+    needs_medcomm = {}
+    medcomm_flag = {}
+
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
 
-        # get core blocks completed
+        core_completed = get_core_blocks_completed(
+            resident_progress, posting_info
+        )
+
+        # Detect residents who already exceeded base GM/GRM caps
+        needs_medcomm[mcr] = (
+            core_completed.get("GM", 0) > GM_GRM_CAPS[0]["GM"]
+            or core_completed.get("GRM", 0) > GM_GRM_CAPS[0]["GRM"]
+        )
+
+        # MedComm flag: true if completed historically or assigned this year
+        medcomm_flag[mcr] = model.NewBoolVar(f"medcomm_flag[{mcr}]")
+
+        if needs_medcomm[mcr]:
+            # Must unlock higher GM/GRM caps
+            model.Add(medcomm_flag[mcr] == 1)
+
+        # Historical MedComm completion
+        medcomm_done_historically = int(
+            resident_progress
+            .get("MedComm (TTSH)", {})
+            .get("is_completed", False)
+        )
+
+        if medcomm_done_historically:
+            model.Add(medcomm_flag[mcr] == 1)
+        else:
+            medcomm_assigned = sum(
+                x[mcr]["MedComm (TTSH)"][b] for b in blocks
+            )
+
+            # medcomm_flag == 1  ⇔  at least one MedComm assigned
+            model.Add(medcomm_assigned >= medcomm_flag[mcr])
+            model.Add(medcomm_assigned >= 1).OnlyEnforceIf(medcomm_flag[mcr])
+
+    for resident in residents:
+        mcr = resident["mcr"]
+        resident_progress = posting_progress.get(mcr, {})
+
+        # Flag: MedComm completed historically OR assigned in any block this year
+        flag = medcomm_flag[mcr]
+
+        # get core blocks completed historically
         core_blocks_completed_map = get_core_blocks_completed(
             resident_progress, posting_info
         )
@@ -504,10 +558,33 @@ def allocate_timetable(
                 for b in blocks
             )
 
-            if blocks_completed >= required_blocks:
-                model.Add(assigned_blocks == 0)
+            # extended caps for GM / GRM if medcomm present
+            if base_posting in HC5_GM_GRM:
+                cap_no_medcomm = GM_GRM_CAPS[0][base_posting]
+                cap_with_medcomm = GM_GRM_CAPS[1][base_posting]
+
+                model.Add(
+                    blocks_completed + assigned_blocks <= cap_no_medcomm
+                ).OnlyEnforceIf(flag.Not())
+                model.Add(
+                    blocks_completed + assigned_blocks <= cap_with_medcomm
+                ).OnlyEnforceIf(flag)
+
+            # simple capped cores
+            elif base_posting in HC5_SIMPLE_CORES:
+                if blocks_completed >= required_blocks:
+                    # Requirement already met → block further assignment
+                    model.Add(assigned_blocks == 0)
+                else:
+                    model.Add(
+                        blocks_completed + assigned_blocks <= required_blocks
+                    )
+
+            # MICU / RCCM
             else:
-                model.Add(blocks_completed + assigned_blocks <= required_blocks)
+                # Intentionally not capped here.
+                # Governed exclusively by HC15 (packs, stages, contiguity).
+                pass
 
     # Hard Constraint 6: Prevent residents from repeating the same elective regardless of hospital
     for resident in residents:
