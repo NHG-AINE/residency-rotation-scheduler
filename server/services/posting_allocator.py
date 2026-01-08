@@ -913,10 +913,19 @@ def allocate_timetable(
             model.Add(max_in_half - min_in_half <= delta)
 
     # Hard Constraint 17: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
+    grm_cap = posting_info["GRM (TTSH)"]["max_residents"]
+    medcomm_cap = posting_info["MedComm (TTSH)"]["max_residents"]
+
+    # Handle unlimited capacity (0 = unlimited)
+    if grm_cap == 0 or medcomm_cap == 0:
+        max_pair_capacity = len(residents)
+    else:
+        max_pair_capacity = grm_cap + medcomm_cap
+
     pair_total_per_block = {}
 
     for b in blocks: 
-        total = model.NewIntVar(0, len(residents), f"pair_total_grm_medcomm_{b}")
+        total = model.NewIntVar(0, max_pair_capacity, f"pair_total_grm_medcomm_{b}")
         assigned_sum = (
             sum(x[r["mcr"]]["GRM (TTSH)"][b] for r in residents) +
             sum(x[r["mcr"]]["MedComm (TTSH)"][b] for r in residents)

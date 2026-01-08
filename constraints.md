@@ -182,8 +182,9 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - `balancing_deviations`
 - Some postings always have 0 balancing deviation, hence are excluded from the list of postings in the dropdown. 
 
-#### HC17 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)`
+#### HC17 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)
 - Across each month block, the **total** number of residents assigned to both `GRM (TTSH)` and `MedComm (TTSH)` is equal.
+- This shared quota is decided by the solver. 
 
 ## Soft Constraints
 
