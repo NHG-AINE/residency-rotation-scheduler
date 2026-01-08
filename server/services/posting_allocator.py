@@ -485,8 +485,8 @@ def allocate_timetable(
             model.Add(ccr_runs == 0)
 
     # Hard Constraint 5: Ensure core postings are not over-assigned to each resident
-    # # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
-    # HC5_SIMPLE_CORES = {"CVM", "ED", "NL"}
+    # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
+    HC5_SIMPLE_CORES = {"CVM", "ED", "NL"}
     HC5_GM_GRM = {"GM", "GRM"}
 
     GM_GRM_CAPS = {
@@ -581,10 +581,10 @@ def allocate_timetable(
                     )
 
             # MICU / RCCM
-            # else:
-            #     # Intentionally not capped here.
-            #     # Governed exclusively by HC15 (packs, stages, contiguity).
-            #     pass
+            else:
+                # Intentionally not capped here.
+                # Governed exclusively by HC15 (packs, stages, contiguity).
+                pass
 
     # Hard Constraint 6: Prevent residents from repeating the same elective regardless of hospital
     for resident in residents:
