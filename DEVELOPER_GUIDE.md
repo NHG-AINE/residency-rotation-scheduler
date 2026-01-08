@@ -540,7 +540,7 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
 
 ## Deployment and release checklist
 - Deployment  
-  - Create a branch from `main`
+  - Create a branch from `dev`
   - Merge `prod` into this branch
 - Update [`CHANGELOG.md`](/CHANGELOG.md) and version mentions (this guide and [`README.md`](/README.md)).
 - Run `cd client && npm run lint && npm run build`; ensure the API accepts a representative dataset without errors.
