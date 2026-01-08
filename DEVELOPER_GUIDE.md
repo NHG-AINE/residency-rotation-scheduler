@@ -538,8 +538,10 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
     - Response: `{"detail": "Postprocess failed"}` (or a more specific postprocess error string).
     - Reason: Recomputing the timetable after save succeeded in parsing but failed during postprocessing.
 
-## Release checklist
-
+## Deployment and release checklist
+- Deployment  
+  - Create a branch from `main`
+  - Merge `prod` into this branch
 - Update [`CHANGELOG.md`](/CHANGELOG.md) and version mentions (this guide and [`README.md`](/README.md)).
 - Run `cd client && npm run lint && npm run build`; ensure the API accepts a representative dataset without errors.
 - Perform the local smoke test above and download `final_timetable.csv` as a sanity check.
