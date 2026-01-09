@@ -539,9 +539,17 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
     - Reason: Recomputing the timetable after save succeeded in parsing but failed during postprocessing.
 
 ## Deployment and release checklist
-- Deployment  
-  - Create a branch from `dev`
-  - Merge `prod` into this branch
+- Deployment steps 
+  - On GitHub:
+    - Click "New pull request"
+    - Set base: `prod` and compare: `dev`
+    - Click "Create pull request"
+    - Review the changes, then click "Merge pull request"
+    - Click "Confirm merge"
+  - On Replit:
+    - Open the Shell tab
+    - Run: `git pull origin prod`
+    - Click the "Publish" button (or go to Deploy tab)
 - Update [`CHANGELOG.md`](/CHANGELOG.md) and version mentions (this guide and [`README.md`](/README.md)).
 - Run `cd client && npm run lint && npm run build`; ensure the API accepts a representative dataset without errors.
 - Perform the local smoke test above and download `final_timetable.csv` as a sanity check.
