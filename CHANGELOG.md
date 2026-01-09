@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. Version numbers follow semantic versioning and dates use `YYYY-MM-DD`.
 
+## [1.0.3] - 2026-01-09
+### Changed
+### Fixed
+- Fixed status code 400 error when attempting to export final timetable CSV
+    - Removed unused `optimisation_score` field from backend `/api/download-csv` api
+    - https://github.com/NHG-AINE/residency-rotation-scheduler/pull/63
+
 ## [1.0.2] - 2026-01-08
 ### Changed
 - Added strict validation functions for each CSV type to verify required columns are present, enforce data type constraints (e.g. integers, booleans), validate value ranges and allowed enums
