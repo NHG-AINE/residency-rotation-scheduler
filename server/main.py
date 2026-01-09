@@ -225,13 +225,13 @@ async def download_csv(payload: Dict[str, Any] = Body(...)):
     success = payload.get("success")
     residents = payload.get("residents")
     resident_history = payload.get("resident_history")
-    optimisation_scores = payload.get("optimisation_scores")
+    # optimisation_scores = payload.get("optimisation_scores")
 
     if not (
         success
         and isinstance(residents, list)
         and isinstance(resident_history, list)
-        and isinstance(optimisation_scores, list)
+        # and isinstance(optimisation_scores, list)
     ):
         raise HTTPException(status_code=400, detail="Invalid API response shape")
 
@@ -253,7 +253,7 @@ async def download_csv(payload: Dict[str, Any] = Body(...)):
         "mcr",
         "name",
         "resident_year",
-        "optimisation_score",
+        # "optimisation_score",
         *MONTH_LABELS,
         "ccr_posting_code",
     ]
@@ -263,11 +263,11 @@ async def download_csv(payload: Dict[str, Any] = Body(...)):
         mcr = resident.get("mcr", "")
         name = resident.get("name", "")
         year = resident.get("resident_year", "")
-        score = optimisation_scores[idx] if idx < len(optimisation_scores) else ""
+        # score = optimisation_scores[idx] if idx < len(optimisation_scores) else ""
         by_block = history_by_mcr.get(mcr, {})
         block_codes = [by_block.get(i + 1, "") for i in range(12)]
         ccr = resident.get("ccr_status", {}).get("posting_code", "")
-        cols = [mcr, name, year, score, *block_codes, ccr]
+        cols = [mcr, name, year, *block_codes, ccr]
         escaped = ['"{}"'.format(str(col).replace('"', '""')) for col in cols]
         rows.append(",".join(escaped))
 
