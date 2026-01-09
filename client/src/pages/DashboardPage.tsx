@@ -475,7 +475,6 @@ const HomePage: React.FC = () => {
           )}
           <CohortStatistics
             statistics={apiResponse.statistics}
-            residents={apiResponse.residents}
           />
           <PostingUtilTable
             postingUtil={apiResponse.statistics.cohort.posting_util}

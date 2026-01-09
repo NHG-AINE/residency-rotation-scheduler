@@ -12,24 +12,20 @@ import {
 
 type Props = {
   statistics: Statistics;
-  residents: Array<{
-    mcr: string;
-    name: string;
-  }>;
 };
 
-const CohortStatistics: React.FC<Props> = ({ residents, statistics }) => {
+const CohortStatistics: React.FC<Props> = ({ statistics }) => {
   const { total_residents, cohort } = statistics;
-  const { optimisation_scores, elective_preference_satisfaction } = cohort;
+  const { elective_preference_satisfaction } = cohort;
 
   // Map optimisation scores to resident scores with actual names
-  const mappedScores = optimisation_scores.map((score, index) => {
-    const resident = residents[index];
-    return {
-      residentName: resident ? resident.name : `Resident ${index + 1}`,
-      score: score,
-    };
-  });
+  // const mappedScores = optimisation_scores.map((score, index) => {
+  //   const resident = residents[index];
+  //   return {
+  //     residentName: resident ? resident.name : `Resident ${index + 1}`,
+  //     score: score,
+  //   };
+  // });
 
   return (
     <Card className="bg-gray-50">
