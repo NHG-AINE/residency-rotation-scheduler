@@ -93,6 +93,7 @@ const ResidentTimetable: React.FC<Props> = ({
   const { apiResponse, setApiResponse } = useApiResponseContext();
   const [isSaving, setIsSaving] = useState(false);
   const [warnings, setWarnings] = useState<Warning[]>([]);
+  const hasHydratedRef = useRef(false);
 
   // required so that popover does not get "eaten" by the DnD overlay
   const sensors = useSensors(
@@ -131,7 +132,6 @@ const ResidentTimetable: React.FC<Props> = ({
 
     const currentYear = allHistory.filter((h) => h.is_current_year === true);
     const pastYear = allHistory.filter((h) => h.is_current_year === false);
-
     const initialCurrentYearBlockPostings = currentYear.reduce<BlockMap>(
       (m, a) => {
         m[a.month_block] = a;
@@ -406,7 +406,34 @@ const ResidentTimetable: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    setCurrentYearBlockPostings(initialCurrentYearBlockPostings);
+    // Nothing to hydrate
+    if (!Object.keys(initialCurrentYearBlockPostings).length) return;
+
+    // when timetable is first generated, set it with backend data
+    if (!hasHydratedRef.current) {
+      setCurrentYearBlockPostings(initialCurrentYearBlockPostings);
+      originalBlockPostings.current = initialCurrentYearBlockPostings;
+      hasHydratedRef.current = true;
+      return;
+    }
+
+    // after saving, keep the blocks with leaves
+    setCurrentYearBlockPostings(prev => {
+      const merged: BlockMap = { ...initialCurrentYearBlockPostings };
+
+      for (let i = 1; i <= 12; i++) {
+        const existing = prev[i];
+
+        if (existing?.is_leave) {
+          merged[i] = existing;
+        } else if (editedBlocks.has(i) && existing) {
+          merged[i] = existing;
+        }
+      }
+
+      return merged;
+    });
+
     originalBlockPostings.current = initialCurrentYearBlockPostings;
     setEditedBlocks(new Set());
   }, [initialCurrentYearBlockPostings]);
