@@ -406,7 +406,24 @@ const ResidentTimetable: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    setCurrentYearBlockPostings(initialCurrentYearBlockPostings);
+    setCurrentYearBlockPostings(prev => {
+      const merged: BlockMap = { ...prev };
+
+      for (let i = 1; i <= 12; i++) {
+        const incoming = initialCurrentYearBlockPostings[i];
+        const existing = prev[i];
+
+        // Always preserve leave blocks
+        if (existing?.is_leave) {
+          merged[i] = existing;
+        } else if (incoming) {
+          merged[i] = incoming;
+        }
+      }
+
+      return merged;
+    });
+
     originalBlockPostings.current = initialCurrentYearBlockPostings;
     setEditedBlocks(new Set());
   }, [initialCurrentYearBlockPostings]);
