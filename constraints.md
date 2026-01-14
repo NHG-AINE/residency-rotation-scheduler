@@ -201,7 +201,6 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC18 - Only assign electives in a resident's elective preferences 
 - For electives, only assign postings among the resident's elective preferences. 
 - For each resident and each block: If a posting is elective and the posting is **not** in the resident’s elective preference list, then that posting must never be assigned to the resident.
-- Exeception: When required to unlock the extended `GM` caps under HC5, allow `MedComm (TTSH)` to be assigned even if it is not in a resident’s elective preferences
 
 ## Soft Constraints
 
