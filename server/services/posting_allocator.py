@@ -486,12 +486,12 @@ def allocate_timetable(
 
     # Hard Constraint 5: Ensure core postings are not over-assigned to each resident
     # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
-    HC5_SIMPLE_CORES = {"CVM", "ED", "NL"}
-    HC5_GM_GRM = {"GM", "GRM"}
+    HC5_SIMPLE_CORES = {"CVM", "ED", "NL", "GRM"}
+    HC5_GM = {"GM"}
 
     GM_GRM_CAPS = {
-        0: {"GM": CORE_REQUIREMENTS["GM"], "GRM": CORE_REQUIREMENTS["GRM"]},
-        1: {"GM": 12, "GRM": 3},  # with MedComm
+        0: {"GM": CORE_REQUIREMENTS["GM"]},
+        1: {"GM": 12},  # with MedComm
     }
 
     needs_medcomm = {}
@@ -505,17 +505,16 @@ def allocate_timetable(
             resident_progress, posting_info
         )
 
-        # Detect residents who already exceeded base GM/GRM caps
+        # Detect residents who already exceeded base GM caps
         needs_medcomm[mcr] = (
             core_completed.get("GM", 0) > GM_GRM_CAPS[0]["GM"]
-            or core_completed.get("GRM", 0) > GM_GRM_CAPS[0]["GRM"]
         )
 
         # MedComm flag: true if completed historically or assigned this year
         medcomm_flag[mcr] = model.NewBoolVar(f"medcomm_flag[{mcr}]")
 
         if needs_medcomm[mcr]:
-            # Must unlock higher GM/GRM caps
+            # Must unlock higher GM caps
             model.Add(medcomm_flag[mcr] == 1)
 
         # Historical MedComm completion
@@ -558,8 +557,8 @@ def allocate_timetable(
                 for b in blocks
             )
 
-            # extended caps for GM / GRM if medcomm present
-            if base_posting in HC5_GM_GRM:
+            # extended caps for GM if medcomm present
+            if base_posting in HC5_GM:
                 cap_no_medcomm = GM_GRM_CAPS[0][base_posting]
                 cap_with_medcomm = GM_GRM_CAPS[1][base_posting]
 
