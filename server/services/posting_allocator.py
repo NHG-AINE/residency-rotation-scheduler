@@ -1020,6 +1020,27 @@ def allocate_timetable(
     for b in blocks[1:]:
         model.Add(pair_total_per_block[b] == ref_total)
 
+    # Hard Constraint 18: For electives, only assign postings from elective preferences
+    logger.info("HC18: Restrict electives to resident preferences")
+    # residents_updated = [r for r in residents if r["mcr"] == "M67879A"]
+    for resident in residents:
+        mcr = resident["mcr"]
+        resident_pref_postings = set(pref_map.get(mcr, {}).values()) 
+        logger.info(
+            f"HC18: {mcr} allowed electives = {sorted(resident_pref_postings)}"
+        )
+
+        for elective in ELECTIVE_POSTINGS:
+            # MedComm allowed if required by HC5
+            if elective == "MedComm (TTSH)" and needs_medcomm.get(mcr, False):
+                logger.info(f"HC18 override: {mcr} allowed MedComm due to GM/GRM cap extension")
+                continue
+
+            # if elective not in preferences, forbid assignment
+            if elective not in resident_pref_postings:
+                for b in blocks:
+                    model.Add(x[mcr][elective][b] == 0)
+
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
     ###########################################################################
