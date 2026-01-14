@@ -1031,11 +1031,6 @@ def allocate_timetable(
         )
 
         for elective in ELECTIVE_POSTINGS:
-            # MedComm allowed if required by HC5
-            if elective == "MedComm (TTSH)" and needs_medcomm.get(mcr, False):
-                logger.info(f"HC18 override: {mcr} allowed MedComm due to GM/GRM cap extension")
-                continue
-
             # if elective not in preferences, forbid assignment
             if elective not in resident_pref_postings:
                 for b in blocks:

@@ -278,7 +278,7 @@ def group_codes_by_institution(codes: List[str]) -> Dict[str, List[str]]:
 CORE_REQUIREMENTS = {
     # total blocks required for each core posting
     "GM": 6,
-    "GRM": 2,
+    "GRM": 3,
     "CVM": 3,
     "RCCM": 3,
     "MICU": 3,
