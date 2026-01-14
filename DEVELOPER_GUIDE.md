@@ -196,14 +196,10 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
 - **Example**:
   ```
   ELECTIVE_POSTINGS = [
-    ID (TTSH),
-    Med Onco (TTSH),
-    PMD (TTSH),
-    RAI (TTSH)
-    ...
+    'Endocrine (TTSH)', 'Gastro (TTSH)', 'Haemato (TTSH)', 'ID (TTSH)', 'Med Onco (TTSH)', 'PMD (TTSH)', 'PMD (KTPH)', 'RAI (TTSH)', 'Rehab (TTSH)', 'Renal (TTSH)', 'Endocrine (KTPH)', 'Renal (KTPH)', 'Med Onco (NCC)', 'Derm (NSC)', 'MedComm (TTSH)'
   ]
   ```
-
+  
 #### `ELECTIVE_BASE_CODES`
 
 - Unique list of elective posting codes without variants (without institution names)
