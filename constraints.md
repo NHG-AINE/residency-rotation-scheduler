@@ -122,15 +122,15 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC5 — Core caps (per resident)
 
 - Do not exceed base core requirements.
-  - `GM` and `GRM` can exceed base requirements if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
-  | Scenario                | medcomm_flag | GM max | GRM max |
-  | ----------------------- | ------------ | ------ | ------- |
-  | No MedComm              | 0            | 6      | 2       |
-  | MedComm done / assigned | 1            | 12     | 3       |
+  - `GM` can exceed base requirements if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+  | Scenario                | medcomm_flag | GM max |
+  | ----------------------- | ------------ | ------ |
+  | No MedComm              | 0            | 6      | 
+  | MedComm done / assigned | 1            | 12     |
 
 - If already met historically, block further assignments of that base. 
-  - Exception: `GM` and `GRM` can exceed base requirements (to max of 12 or 3 respectively) if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
-- Implies that if a resident has already exceeded the `GM` / `GRM` base cap and has not done `MedComm` historically, then the solver MUST assign `MedComm`.
+  - Exception: `GM` can exceed base requirements (to max of 12) if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+- Implies that if a resident has already exceeded the `GM` base cap and has not done `MedComm` historically, then the solver MUST assign `MedComm`.
 
 #### HC6 — Elective repetition
 
@@ -197,6 +197,10 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC17 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)
 - Across each month block, the **total** number of residents assigned to both `GRM (TTSH)` and `MedComm (TTSH)` is equal.
 - This shared quota is decided by the solver. 
+
+#### HC18 - Only assign electives in a resident's elective preferences 
+- For electives, only assign postings among the resident's elective preferences. 
+- For each resident and each block: If a posting is elective and the posting is **not** in the resident’s elective preference list, then that posting must never be assigned to the resident.
 
 ## Soft Constraints
 
