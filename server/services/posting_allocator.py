@@ -1010,10 +1010,6 @@ def allocate_timetable(
     for resident in residents:
         mcr = resident["mcr"]
         resident_pref_postings = set(pref_map.get(mcr, {}).values()) 
-        logger.info(
-            f"HC18: {mcr} allowed electives = {sorted(resident_pref_postings)}"
-        )
-
         for elective in ELECTIVE_POSTINGS:
             # if elective not in preferences, forbid assignment
             if elective not in resident_pref_postings:
