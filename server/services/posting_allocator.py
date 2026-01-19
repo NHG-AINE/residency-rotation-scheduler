@@ -875,6 +875,9 @@ def allocate_timetable(
         hist_micu = core_blocks_completed_map.get("MICU", 0)
         hist_rccm = core_blocks_completed_map.get("RCCM", 0)
 
+        if hist_micu == 3 and hist_rccm == 3:
+            continue
+
         if 1 in stages_present and stage1_blocks:
             # by end of 12 months: optionally do first pack (MICU=1 and RCCM=2)
             flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
