@@ -165,13 +165,9 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - Max three GM blocks in stage 1.
 - Historical GM counts toward the cap.
 
-#### HC12 — ED↔GRM contiguity
-
-- If ED or GRM are present, all ED+GRM blocks must form one contiguous run.
-
-#### HC12 - updated
+#### HC12 - Single block (`ED` or CCR) with 2 blocks (`GM`, `GRM` or `MedComm`)
 - Check within 6 months blocks: Within blocks 1-6 and within blocks 7-12
-- If there are 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
+- If there are at least 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
 
 #### HC13 — MICU/RCCM by stage
 

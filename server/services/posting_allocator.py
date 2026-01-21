@@ -741,11 +741,11 @@ def allocate_timetable(
     # If there are >= 2 blocks of {GM, GRM, MedComm},
     # then there must be >= 1 block of {ED or any CCR}
     GROUP_A = ["GM", "GRM", "MedComm"]
-    GROUP_B = ["ED"] + CCR_POSTINGS
+    GROUP_B = ["ED", "GM"]
     SIX_MONTH_WINDOWS = [early_blocks, late_blocks]
 
     def base_posting(text):
-        return (str(text or "").split(" (")[0].strip()).lower()
+        return (str(text or "").split(" (")[0].strip()).upper()
 
     for resident in residents:
         mcr = resident["mcr"]
@@ -765,7 +765,6 @@ def allocate_timetable(
                 )
             )
 
-            # Bool: group_a_count >= 2
             has_two_group_a = model.NewBoolVar(
                 f"{mcr}_HC12_has_two_groupA_window_{w_idx}"
             )
