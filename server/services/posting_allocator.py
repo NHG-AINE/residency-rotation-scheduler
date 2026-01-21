@@ -677,6 +677,9 @@ def allocate_timetable(
     for resident in residents:
         mcr = resident["mcr"]
         for p in posting_codes:
+            # exception for GRM when it is in another run with GM / MedComm
+            if p.split(" (")[0] == "GRM":
+                continue
             # at least one of these must be 0, so you can't have a 1 in Dec and a 1 in Jan
             model.AddBoolOr(
                 [
