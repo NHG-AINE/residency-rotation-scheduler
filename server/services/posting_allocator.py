@@ -756,42 +756,7 @@ def allocate_timetable(
         ]
         model.AddAutomaton(M, 0, [0, 1, 2], transitions)
 
-    # Hard Constraint 13: if ED + GRM + GM present, enforce contiguity
-    for resident in residents:
-        mcr = resident["mcr"]
-
-        # build one BoolVar per block: 1 if block b is ED, GRM or GM, else 0
-        B = []
-        for b in blocks:
-            Bb = model.NewBoolVar(f"{mcr}_bundle_at_{b}")
-            model.Add(sum(x[mcr][p][b] for p in ED_codes + GRM_codes + GM_codes) == Bb)
-            B.append(Bb)
-
-        # states: 0 = before, 1 = in-run, 2 = after
-        transitions = [
-            (0, 0, 0),
-            (0, 1, 1),
-            (1, 1, 1),
-            (1, 0, 2),
-            (2, 0, 2),
-        ]
-        model.AddAutomaton(B, 0, [0, 1, 2], transitions)
-
-    # Hard Constraint 14: enforce 1 ED and 1 GRM SELECTION if BOTH not done before
-    # for resident in residents:
-    #     mcr = resident["mcr"]
-    #     progress = get_core_blocks_completed(
-    #         posting_progress.get(mcr, {}), posting_info
-    #     )
-    #     # have they already finished either ED or GRM?
-    #     done_ED = progress.get("ED", 0) >= CORE_REQUIREMENTS.get("ED", 0)
-    #     done_GRM = progress.get("GRM", 0) >= CORE_REQUIREMENTS.get("GRM", 0)
-
-    #     if not (done_ED or done_GRM):
-    #         model.Add(sum(selection_flags[mcr][p] for p in ED_codes) == 1)
-    #         model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) == 1)
-
-    # Hard Constraint 15: enforce MICU/RCCM minimum requirements by career stage
+    # Hard Constraint 13: enforce MICU/RCCM minimum requirements by career stage
     micu_rccm_pack_shortfall_flags: List[cp_model.BoolVar] = []
     for resident in residents:
         mcr = resident["mcr"]
@@ -930,7 +895,7 @@ def allocate_timetable(
             model.Add(micu_blocks == micu_needed)
             model.Add(rccm_blocks == rccm_needed)
 
-    # Hard Constraint 16: ensure postings are not imbalanced within each half of the year
+    # Hard Constraint 14: ensure postings are not imbalanced within each half of the year
     for p in posting_codes:
         if p == "GRM (TTSH)" or p == "MedComm (TTSH)":
             continue
@@ -976,7 +941,7 @@ def allocate_timetable(
             model.AddMaxEquality(max_in_half, assignments)
             model.Add(max_in_half - min_in_half <= delta)
 
-    # Hard Constraint 17: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
+    # Hard Constraint 15: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
     grm_cap = posting_info["GRM (TTSH)"]["max_residents"]
     medcomm_cap = posting_info["MedComm (TTSH)"]["max_residents"]
 
@@ -1007,9 +972,7 @@ def allocate_timetable(
     for b in blocks[1:]:
         model.Add(pair_total_per_block[b] == ref_total)
 
-    # Hard Constraint 18: For electives, only assign postings from elective preferences
-    logger.info("HC18: Restrict electives to resident preferences")
-    # residents_updated = [r for r in residents if r["mcr"] == "M67879A"]
+    # Hard Constraint 16: For electives, only assign postings from elective preferences
     for resident in residents:
         mcr = resident["mcr"]
         resident_pref_postings = set(pref_map.get(mcr, {}).values()) 
