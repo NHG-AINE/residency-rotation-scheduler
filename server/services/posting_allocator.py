@@ -737,28 +737,59 @@ def allocate_timetable(
             model.Add(gm_blocks_count <= gm_cap_remaining)
 
     # Hard Constraint 12: if ED and GRM present, enforce contiguity
+    # Within each 6-month window (1–6, 7–12):
+    # If there are >= 2 blocks of {GM, GRM, MedComm},
+    # then there must be >= 1 block of {ED or any CCR}
+    GROUP_A = ["GM", "GRM", "MedComm"]
+    GROUP_B = ["ED"] + CCR_POSTINGS
+    SIX_MONTH_WINDOWS = [early_blocks, late_blocks]
+
+    def base_posting(text):
+        return (str(text or "").split(" (")[0].strip()).lower()
+
     for resident in residents:
         mcr = resident["mcr"]
 
-        # build one BoolVar per block: 1 if block b is ED or GRM, else 0
-        M = []
-        for b in blocks:
-            Mb = model.NewBoolVar(f"{mcr}_ED_GRM_at_block_{b}")
-            # exactly one posting per block, so sum(x for ED+GRM) == Mb
-            model.Add(sum(x[mcr][p][b] for p in ED_codes + GRM_codes) == Mb)
-            M.append(Mb)
+        for w_idx, window in enumerate(SIX_MONTH_WINDOWS):
+            group_a_count = model.NewIntVar(
+                0, len(window),
+                f"{mcr}_HC12_groupA_count_window_{w_idx}"
+            )
+            model.Add(
+                group_a_count ==
+                sum(
+                    x[mcr][p][b]
+                    for b in window
+                    for p in x[mcr]
+                    if base_posting(p) in GROUP_A
+                )
+            )
 
-        # states: 0 = before, 1 = in-run, 2 = after
-        transitions = [
-            (0, 0, 0),
-            (0, 1, 1),
-            (1, 1, 1),
-            (1, 0, 2),
-            (2, 0, 2),
-            # no (2,1,…) so no re-entry
-        ]
-        model.AddAutomaton(M, 0, [0, 1, 2], transitions)
+            # Bool: group_a_count >= 2
+            has_two_group_a = model.NewBoolVar(
+                f"{mcr}_HC12_has_two_groupA_window_{w_idx}"
+            )
+            model.Add(group_a_count >= 2).OnlyEnforceIf(has_two_group_a)
+            model.Add(group_a_count <= 1).OnlyEnforceIf(has_two_group_a.Not())
 
+            # Count Group B blocks in this window
+            group_b_count = model.NewIntVar(
+                0, len(window),
+                f"{mcr}_HC12_groupB_count_window_{w_idx}"
+            )
+            model.Add(
+                group_b_count ==
+                sum(
+                    x[mcr][p][b]
+                    for b in window
+                    for p in x[mcr]
+                    if base_posting(p) in GROUP_B
+                )
+            )
+
+            # Enforce implication: if >=2 Group A → >=1 Group B
+            model.Add(group_b_count >= 1).OnlyEnforceIf(has_two_group_a)
+            
     # Hard Constraint 13: enforce MICU/RCCM minimum requirements by career stage
     micu_rccm_pack_shortfall_flags: List[cp_model.BoolVar] = []
     for resident in residents:
