@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file. Version numbers follow semantic versioning and dates use `YYYY-MM-DD`.
 
+## [1.1] - 2026-01-23
+### Added
+- Added HC16 to only assign electives from a resident's elective preferences
+
+### Changed
+- Modified HC12 to check within 6 months blocks: If there are at least 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
+- Modified HC5 to remove extended cap of `GRM`. Instead increased base cap of `GRM` to 3. 
+- Updated interpretation of `max_residents` field of Postings CSV. If `max_resident=0`, then it means 0 capacity, not unlimited capacity.
+- Allowed `mcr` to be read case-insensitive from Resident History CSV
+- Added exception for HC8 for `GRM` when `GRM` is part of a valid run
+
+### Fixed
+- Fixed the bug where the leave blocks disappear after a user edits and saves timetable block(s)
+- Removed HC13 and HC14 as the constraints are not part of user requirements 
+- Modified logic of HC13 to skip HC13 once 3 `RCCM` and 3 `MICU` have been completed historically 
+- Fixed HC3 to allow runs at the end of the blocks, and allow exception postings like `GM`, `GRM` which are part of valid runs
+
 ## [1.0.3] - 2026-01-09
 ### Changed
 ### Fixed
