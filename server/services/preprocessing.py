@@ -394,7 +394,7 @@ def _validate_resident_history_strict(
         is_leave = r.get("is_leave")
 
         # Allow empty posting_code if on leave; otherwise must exist in posting_codes
-        if posting_code:
+        if posting_code and is_leave != 1:
             _require(
                 posting_code in posting_codes,
                 f"Row {idx}: posting_code '{posting_code}' not found in postings CSV",
@@ -503,11 +503,12 @@ def _format_preferences(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     formatted = []
     for row in records:
         posting_code = str(row.get("posting_code") or "").strip()
+        mcr = str(row.get("mcr") or "").strip().upper()
         if not posting_code:
             continue
         formatted.append(
             {
-                "mcr": str(row.get("mcr") or "").strip(),
+                "mcr": mcr,
                 "preference_rank": parse_int(row.get("preference_rank")),
                 "posting_code": posting_code,
             }

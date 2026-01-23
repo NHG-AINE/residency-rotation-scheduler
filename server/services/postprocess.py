@@ -325,18 +325,16 @@ def compute_postprocess(payload: Dict) -> Dict:
             if 1 <= b <= 12:
                 block_filled[b] += 1
 
-        util_per_block = []
-        for block, count in block_filled.items():
-            cap = posting_info[posting_code]["max_residents"]
-            effective_capacity = count if cap == 0 else cap
-            util_per_block.append(
-                {
-                    "month_block": block,
-                    "filled": count,
-                    "capacity": effective_capacity,
-                    "is_over_capacity": count > effective_capacity,
-                }
-            )
+        capacity = int(pinfo.get("max_residents", 0))
+        util_per_block = [
+            {
+                "month_block": block,
+                "filled": count,
+                "capacity": capacity,
+                "is_over_capacity": count > capacity,
+            }
+            for block, count in block_filled.items()
+        ]
 
         posting_util.append(
             {"posting_code": posting_code, "util_per_block": util_per_block}

@@ -277,10 +277,6 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
             cap.setdefault(p, {})[b] = cap.get(p, {}).get(b, 0) + 1
         for p_code, by_b in cap.items():
             max_r = int(posting_info.get(p_code, {}).get("max_residents", 0))
-            
-            # 0 means unlimited → skip capacity validation
-            if max_r == 0:
-                continue
 
             for b, filled in by_b.items():
                 if filled > max_r:

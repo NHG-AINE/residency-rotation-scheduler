@@ -100,7 +100,6 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC2 — Posting capacity
 
 - Per-block headcount ≤ `max_residents` minus any slots reserved for leave.
-  - NOTE: If `max_residents=0` in `postings.csv`, it is treated as no quota limit on the maximum number of residents in that posting.
 - `available_capacity = max_residents - leave_reserved_slots`
 - `sum(x[r["mcr"]][p][b] for r in residents) <= available_capacity`
 
@@ -122,15 +121,15 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 #### HC5 — Core caps (per resident)
 
 - Do not exceed base core requirements.
-  - `GM` and `GRM` can exceed base requirements if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
-  | Scenario                | medcomm_flag | GM max | GRM max |
-  | ----------------------- | ------------ | ------ | ------- |
-  | No MedComm              | 0            | 6      | 2       |
-  | MedComm done / assigned | 1            | 12     | 3       |
+  - `GM` can exceed base requirements if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+  | Scenario                | medcomm_flag | GM max |
+  | ----------------------- | ------------ | ------ |
+  | No MedComm              | 0            | 6      | 
+  | MedComm done / assigned | 1            | 12     |
 
 - If already met historically, block further assignments of that base. 
-  - Exception: `GM` and `GRM` can exceed base requirements (to max of 12 or 3 respectively) if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
-- Implies that if a resident has already exceeded the `GM` / `GRM` base cap and has not done `MedComm` historically, then the solver MUST assign `MedComm`.
+  - Exception: `GM` can exceed base requirements (to max of 12) if the resident already completed `MedComm (TTSH)` in the past or are assigned `MedComm (TTSH)` in any block this year.
+- Implies that if a resident has already exceeded the `GM` base cap and has not done `MedComm` historically, then the solver MUST assign `MedComm`.
 
 #### HC6 — Elective repetition
 
@@ -166,19 +165,11 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - Max three GM blocks in stage 1.
 - Historical GM counts toward the cap.
 
-#### HC12 — ED↔GRM contiguity
+#### HC12 - Single block (`ED` or CCR) with 2 blocks (`GM`, `GRM` or `MedComm`)
+- Check within 6 months blocks: Within blocks 1-6 and within blocks 7-12
+- If there are at least 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
 
-- If ED or GRM are present, all ED+GRM blocks must form one contiguous run.
-
-#### HC13 — ED↔GRM↔GM contiguity
-
-- If ED, GRM, and GM all appear, their combined blocks must form one contiguous run.
-
-#### HC14 — (Disabled) Guardrail for ED and GRM
-
-- Force 1 ED and 1 GRM when neither is done historically.
-
-#### HC15 — MICU/RCCM by stage
+#### HC13 — MICU/RCCM by stage
 
 - Stage 1 may optionally deliver pack #1 (1 MICU, 2 RCCM).
 - If pack #1 not done historically, stage 1+2 together must deliver pack #1.
@@ -186,7 +177,7 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - Stage 3 assigns exactly the remaining MICU and RCCM blocks needed to reach three each after history.
   - 3 MICU + 3 RCCM total (including history)
 
-#### HC16 — Balancing within halves and balancing deviation per posting 
+#### HC14 — Balancing within halves and balancing deviation per posting 
 - Within blocks 1-6 and within blocks 7-12, the user can optionally input how much imbalance is allowed between the maximum and minimum number of residents assigned across 6 blocks. 
   - 0 <= (max - min) <= deviation
 - Else, by default (no input on the balancing deviation), the imbalance is 0. 
@@ -194,9 +185,13 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - `balancing_deviations`
 - Some postings always have 0 balancing deviation, hence are excluded from the list of postings in the dropdown. 
 
-#### HC17 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)
+#### HC15 - Shared quota for `GRM (TTSH)` and `MedComm (TTSH)
 - Across each month block, the **total** number of residents assigned to both `GRM (TTSH)` and `MedComm (TTSH)` is equal.
 - This shared quota is decided by the solver. 
+
+#### HC16 - Only assign electives in a resident's elective preferences 
+- For electives, only assign postings among the resident's elective preferences. 
+- For each resident and each block: If a posting is elective and the posting is **not** in the resident’s elective preference list, then that posting must never be assigned to the resident.
 
 ## Soft Constraints
 
