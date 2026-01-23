@@ -304,7 +304,9 @@ def allocate_timetable(
 
             # bind block-wise variables to posting asgm count variable
             total_blocks = sum(x[mcr][p][b] for b in blocks)
-            model.Add(total_blocks == count * required_duration)
+            
+            # commented out as this should already be enforced by HC3
+            # model.Add(total_blocks == count * required_duration)
 
             # bind selection flags to posting asgm count variable
             flag = selection_flags[mcr][p]
@@ -1119,7 +1121,7 @@ def allocate_timetable(
             core_shortfall[mcr][base] = unmet_flag
 
             # Enforce exact requirement when unmet == 0
-            model.Add(hist_done + assigned == required).OnlyEnforceIf(unmet_flag.Not())
+            model.Add(hist_done + assigned >= required).OnlyEnforceIf(unmet_flag.Not())
 
             # Allow shortfall when unmet == 1
             model.Add(hist_done + assigned <= required - 1).OnlyEnforceIf(unmet_flag)
