@@ -304,7 +304,9 @@ def allocate_timetable(
 
             # bind block-wise variables to posting asgm count variable
             total_blocks = sum(x[mcr][p][b] for b in blocks)
-            model.Add(total_blocks == count * required_duration)
+            
+            # commented out as this should already be enforced by HC3
+            # model.Add(total_blocks == count * required_duration)
 
             # bind selection flags to posting asgm count variable
             flag = selection_flags[mcr][p]
@@ -374,17 +376,6 @@ def allocate_timetable(
             # leaves with posting_code reserve capacity; available slots shrink by that amount
             leave_reserved_slots = leave_quota_usage.get(p, {}).get(b, 0)
 
-            if max_residents == 0:
-                # No quota limit → skip the constraint
-                if leave_reserved_slots:
-                    logger.info(
-                        "No quota for posting %s, but %d slot(s) reserved for leave on block %s",
-                        p,
-                        leave_reserved_slots,
-                        b,
-                    )
-                continue
-
             available_capacity = max_residents - leave_reserved_slots
             if available_capacity < 0:
                 logger.warning(
@@ -405,19 +396,24 @@ def allocate_timetable(
 
             model.Add(sum(x[r["mcr"]][p][b] for r in residents) <= available_capacity)
 
-    # Hard Constraint 3: Enforce required_block_duration happens in consecutive blocks
+    # Hard Constraint 3: Enforce required_block_duration in consecutive blocks
+    HC3_EXCEPTION_POSTINGS = {"GRM (TTSH)", "GM (TTSH)", "GRM (KTPH)", "GM (KTPH)"}
     for resident in residents:
         mcr = resident["mcr"]
         for p in posting_codes:
             required_duration = posting_info[p]["required_block_duration"]
-            vars = [x[mcr][p][b] for b in blocks]  # binary sequence
 
+            is_exception = p in HC3_EXCEPTION_POSTINGS
+            if required_duration <= 1 or is_exception:
+                continue  
+
+            vars = [x[mcr][p][b] for b in blocks]  # binary sequence
             if required_duration > 1:
                 # build automaton: Deterministic Finite Automaton (DFA)
                 d = required_duration
                 INIT = 0  # this state means not currently in a run
                 TERM = d + 1  # this state means finished a valid run
-                final_states = {INIT, TERM}
+                final_states = {INIT, TERM, d}
                 transitions = []
 
                 # from state 0, you either stay on state 0 or start a run (to state 1)
@@ -688,6 +684,9 @@ def allocate_timetable(
     for resident in residents:
         mcr = resident["mcr"]
         for p in posting_codes:
+            # exception for GRM when it is in another run with GM / MedComm
+            if p.split(" (")[0] == "GRM":
+                continue
             # at least one of these must be 0, so you can't have a 1 in Dec and a 1 in Jan
             model.AddBoolOr(
                 [
@@ -745,64 +744,59 @@ def allocate_timetable(
             model.Add(gm_blocks_count <= gm_cap_remaining)
 
     # Hard Constraint 12: if ED and GRM present, enforce contiguity
+    # Within each 6-month window (1–6, 7–12):
+    # If there are >= 2 blocks of {GM, GRM, MedComm},
+    # then there must be >= 1 block of {ED or any CCR}
+    GROUP_A = ["GM", "GRM", "MedComm"]
+    GROUP_B = ["ED", "GM"]
+    SIX_MONTH_WINDOWS = [early_blocks, late_blocks]
+
+    def base_posting(text):
+        return (str(text or "").split(" (")[0].strip()).upper()
+
     for resident in residents:
         mcr = resident["mcr"]
 
-        # build one BoolVar per block: 1 if block b is ED or GRM, else 0
-        M = []
-        for b in blocks:
-            Mb = model.NewBoolVar(f"{mcr}_ED_GRM_at_block_{b}")
-            # exactly one posting per block, so sum(x for ED+GRM) == Mb
-            model.Add(sum(x[mcr][p][b] for p in ED_codes + GRM_codes) == Mb)
-            M.append(Mb)
+        for w_idx, window in enumerate(SIX_MONTH_WINDOWS):
+            group_a_count = model.NewIntVar(
+                0, len(window),
+                f"{mcr}_HC12_groupA_count_window_{w_idx}"
+            )
+            model.Add(
+                group_a_count ==
+                sum(
+                    x[mcr][p][b]
+                    for b in window
+                    for p in x[mcr]
+                    if base_posting(p) in GROUP_A
+                )
+            )
 
-        # states: 0 = before, 1 = in-run, 2 = after
-        transitions = [
-            (0, 0, 0),
-            (0, 1, 1),
-            (1, 1, 1),
-            (1, 0, 2),
-            (2, 0, 2),
-            # no (2,1,…) so no re-entry
-        ]
-        model.AddAutomaton(M, 0, [0, 1, 2], transitions)
+            has_two_group_a = model.NewBoolVar(
+                f"{mcr}_HC12_has_two_groupA_window_{w_idx}"
+            )
+            model.Add(group_a_count >= 2).OnlyEnforceIf(has_two_group_a)
+            model.Add(group_a_count <= 1).OnlyEnforceIf(has_two_group_a.Not())
 
-    # Hard Constraint 13: if ED + GRM + GM present, enforce contiguity
-    for resident in residents:
-        mcr = resident["mcr"]
+            # Count Group B blocks in this window
+            group_b_count = model.NewIntVar(
+                0, len(window),
+                f"{mcr}_HC12_groupB_count_window_{w_idx}"
+            )
+            model.Add(
+                group_b_count ==
+                sum(
+                    x[mcr][p][b]
+                    for b in window
+                    for p in x[mcr]
+                    if base_posting(p) in GROUP_B
+                )
+            )
 
-        # build one BoolVar per block: 1 if block b is ED, GRM or GM, else 0
-        B = []
-        for b in blocks:
-            Bb = model.NewBoolVar(f"{mcr}_bundle_at_{b}")
-            model.Add(sum(x[mcr][p][b] for p in ED_codes + GRM_codes + GM_codes) == Bb)
-            B.append(Bb)
-
-        # states: 0 = before, 1 = in-run, 2 = after
-        transitions = [
-            (0, 0, 0),
-            (0, 1, 1),
-            (1, 1, 1),
-            (1, 0, 2),
-            (2, 0, 2),
-        ]
-        model.AddAutomaton(B, 0, [0, 1, 2], transitions)
-
-    # Hard Constraint 14: enforce 1 ED and 1 GRM SELECTION if BOTH not done before
-    # for resident in residents:
-    #     mcr = resident["mcr"]
-    #     progress = get_core_blocks_completed(
-    #         posting_progress.get(mcr, {}), posting_info
-    #     )
-    #     # have they already finished either ED or GRM?
-    #     done_ED = progress.get("ED", 0) >= CORE_REQUIREMENTS.get("ED", 0)
-    #     done_GRM = progress.get("GRM", 0) >= CORE_REQUIREMENTS.get("GRM", 0)
-
-    #     if not (done_ED or done_GRM):
-    #         model.Add(sum(selection_flags[mcr][p] for p in ED_codes) == 1)
-    #         model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) == 1)
-
-    # Hard Constraint 15: enforce MICU/RCCM minimum requirements by career stage
+            # Enforce implication: if >=2 Group A → >=1 Group B
+            model.Add(group_b_count >= 1).OnlyEnforceIf(has_two_group_a)
+            
+    # Hard Constraint 13: enforce MICU/RCCM minimum requirements by career stage
     micu_rccm_pack_shortfall_flags: List[cp_model.BoolVar] = []
     for resident in residents:
         mcr = resident["mcr"]
@@ -886,6 +880,9 @@ def allocate_timetable(
         hist_micu = core_blocks_completed_map.get("MICU", 0)
         hist_rccm = core_blocks_completed_map.get("RCCM", 0)
 
+        if hist_micu == 3 and hist_rccm == 3:
+            continue
+
         if 1 in stages_present and stage1_blocks:
             # by end of 12 months: optionally do first pack (MICU=1 and RCCM=2)
             flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
@@ -938,7 +935,7 @@ def allocate_timetable(
             model.Add(micu_blocks == micu_needed)
             model.Add(rccm_blocks == rccm_needed)
 
-    # Hard Constraint 16: ensure postings are not imbalanced within each half of the year
+    # Hard Constraint 14: ensure postings are not imbalanced within each half of the year
     for p in posting_codes:
         if p == "GRM (TTSH)" or p == "MedComm (TTSH)":
             continue
@@ -949,11 +946,7 @@ def allocate_timetable(
         max_residents = posting_info[p]["max_residents"] 
 
         # ensure balancing deviation is within posting capacity
-        if max_residents == 0:
-            # 0 means unlimited capacity → do not cap deviation
-            delta = max(0, balancing_deviation)
-        else:
-            delta = max(0, min(balancing_deviation, max_residents))
+        delta = max(0, min(balancing_deviation, max_residents))
 
         # update balancing_deviations if delta is non-zero
         if delta > 0:
@@ -988,7 +981,7 @@ def allocate_timetable(
             model.AddMaxEquality(max_in_half, assignments)
             model.Add(max_in_half - min_in_half <= delta)
 
-    # Hard Constraint 17: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
+    # Hard Constraint 15: Shared monthly quota for GRM (TTSH) and MedComm (TTSH)
     grm_cap = posting_info["GRM (TTSH)"]["max_residents"]
     medcomm_cap = posting_info["MedComm (TTSH)"]["max_residents"]
 
@@ -1019,16 +1012,10 @@ def allocate_timetable(
     for b in blocks[1:]:
         model.Add(pair_total_per_block[b] == ref_total)
 
-    # Hard Constraint 18: For electives, only assign postings from elective preferences
-    logger.info("HC18: Restrict electives to resident preferences")
-    # residents_updated = [r for r in residents if r["mcr"] == "M67879A"]
+    # Hard Constraint 16: For electives, only assign postings from elective preferences
     for resident in residents:
         mcr = resident["mcr"]
         resident_pref_postings = set(pref_map.get(mcr, {}).values()) 
-        logger.info(
-            f"HC18: {mcr} allowed electives = {sorted(resident_pref_postings)}"
-        )
-
         for elective in ELECTIVE_POSTINGS:
             # if elective not in preferences, forbid assignment
             if elective not in resident_pref_postings:
@@ -1134,7 +1121,7 @@ def allocate_timetable(
             core_shortfall[mcr][base] = unmet_flag
 
             # Enforce exact requirement when unmet == 0
-            model.Add(hist_done + assigned == required).OnlyEnforceIf(unmet_flag.Not())
+            model.Add(hist_done + assigned >= required).OnlyEnforceIf(unmet_flag.Not())
 
             # Allow shortfall when unmet == 1
             model.Add(hist_done + assigned <= required - 1).OnlyEnforceIf(unmet_flag)
