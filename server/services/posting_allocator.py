@@ -394,19 +394,24 @@ def allocate_timetable(
 
             model.Add(sum(x[r["mcr"]][p][b] for r in residents) <= available_capacity)
 
-    # Hard Constraint 3: Enforce required_block_duration happens in consecutive blocks
+    # Hard Constraint 3: Enforce required_block_duration in consecutive blocks
+    HC3_EXCEPTION_POSTINGS = {"GRM (TTSH)", "GM (TTSH)", "GRM (KTPH)", "GM (KTPH)"}
     for resident in residents:
         mcr = resident["mcr"]
         for p in posting_codes:
             required_duration = posting_info[p]["required_block_duration"]
-            vars = [x[mcr][p][b] for b in blocks]  # binary sequence
 
+            is_exception = p in HC3_EXCEPTION_POSTINGS
+            if required_duration <= 1 or is_exception:
+                continue  
+
+            vars = [x[mcr][p][b] for b in blocks]  # binary sequence
             if required_duration > 1:
                 # build automaton: Deterministic Finite Automaton (DFA)
                 d = required_duration
                 INIT = 0  # this state means not currently in a run
                 TERM = d + 1  # this state means finished a valid run
-                final_states = {INIT, TERM}
+                final_states = {INIT, TERM, d}
                 transitions = []
 
                 # from state 0, you either stay on state 0 or start a run (to state 1)
