@@ -400,13 +400,6 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
 
           {/* right controls */}
           <div className="flex gap-2 items-center">
-            {/* show current pin size */}
-            <div className="text-sm text-gray-600 space-x-3">
-              <span>Total results: {filteredResidents.length}</span>
-              <span>Showing: {table.getRowModel().rows.length}</span>
-              <span>Selected: {pinnedMcrs?.size ?? 0}</span>
-            </div>
-
             {/* clear all pins */}
             <Button
               variant="ghost"
@@ -500,6 +493,13 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
               onChange={(e) => table.setGlobalFilter(e.target.value)}
               className="h-8 w-64"
             />
+          </div>
+
+          {/* show current pin size */}
+          <div className="text-sm text-gray-600 space-x-3">
+            <span>Total results: {filteredResidents.length}</span>
+            <span>Showing: {table.getRowModel().rows.length}</span>
+            <span>Selected: {pinnedMcrs?.size ?? 0}</span>
           </div>
         </div>
 
