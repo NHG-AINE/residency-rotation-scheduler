@@ -112,3 +112,5 @@ export interface CsvFilesState {
 export interface CsvRow {
   [key: string]: string | number;
 }
+
+export type MonthView = "ALL" | "FIRST_6" | "LAST_6";

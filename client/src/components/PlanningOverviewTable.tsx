@@ -52,7 +52,7 @@ import {
   ChevronUpIcon,
   TrashIcon,
 } from "lucide-react";
-import type { ApiResponse } from "../types";
+import type { ApiResponse, MonthView } from "../types";
 import type { CheckedState } from "@radix-ui/react-checkbox";
 
 interface PlanningOverviewTableProps {
@@ -74,6 +74,7 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
 }) => {
   const { residents, resident_history, statistics, postings } = apiResponse;
   const optimisationScores = statistics.cohort.optimisation_scores;
+  type ResidentRow = (typeof residents)[number];
 
   // filter by current year history (memoized)
   const currentYearHistory = useMemo(
@@ -158,6 +159,7 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [selectedPostings, setSelectedPostings] = useState<string[]>([]);
+  const [monthView, setMonthView] = useState<MonthView>("ALL");
 
   const togglePostingSelection = useCallback((code: string) => {
     setSelectedPostings((prev) =>
@@ -185,8 +187,35 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
     });
   }, [residents, codeSetByMcr, selectedPostings]);
 
+  const visibleMonths = useMemo(() => {
+    if (monthView === "FIRST_6") return monthLabels.slice(0, 6);
+    if (monthView === "LAST_6") return monthLabels.slice(6, 12);
+    return monthLabels;
+  }, [monthView, monthLabels]);
+  
+  const monthColumns = useMemo<ColumnDef<ResidentRow>[]>(() => {
+    return visibleMonths.map((label, visibleIdx) => {
+      const actualMonthIndex =
+        monthView === "LAST_6"
+          ? visibleIdx + 7
+          : visibleIdx + 1;
+
+      return {
+        id: `month-${monthView}-${actualMonthIndex}`, 
+        header: () => <div className="text-center">{label}</div>,
+        cell: ({ row }) => (
+          <div className="text-center">
+            {residentPostings[row.original.mcr]?.[actualMonthIndex] || "-"}
+          </div>
+        ),
+        enableSorting: false,
+        enableGlobalFilter: false,
+      };
+    });
+  }, [visibleMonths, monthView, residentPostings]);
+
   // columns
-  const columns = useMemo<ColumnDef<(typeof residents)[number]>[]>(() => {
+  const columns = useMemo<ColumnDef<ResidentRow>[]>(() => {
     return [
       {
         id: "pin",
@@ -301,18 +330,7 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
           <div className="text-center">{getValue<number>()}</div>
         ),
       },
-      // month columns
-      ...monthLabels.map((label, i) => ({
-        id: `month-${i + 1}`,
-        header: () => <div className="text-center">{label}</div>,
-        cell: ({ row }: any) => (
-          <div className="text-center">
-            {residentPostings[row.original.mcr]?.[i + 1] || "-"}
-          </div>
-        ),
-        enableSorting: false,
-        enableGlobalFilter: false,
-      })),
+      ...monthColumns,
       {
         id: "ccr",
         header: () => <div className="text-center">Done CCR?</div>,
@@ -325,7 +343,7 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
         enableGlobalFilter: false,
       },
     ];
-  }, [pinnedMcrs, residentPostings, scoreByMcr, setPinnedMcrs, onTogglePin]);
+  }, [pinnedMcrs, residentPostings, scoreByMcr, setPinnedMcrs, onTogglePin, monthColumns]);
 
   // table properties
   const table = useReactTable({
@@ -382,13 +400,6 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
 
           {/* right controls */}
           <div className="flex gap-2 items-center">
-            {/* show current pin size */}
-            <div className="text-sm text-gray-600 space-x-3">
-              <span>Total results: {filteredResidents.length}</span>
-              <span>Showing: {table.getRowModel().rows.length}</span>
-              <span>Selected: {pinnedMcrs?.size ?? 0}</span>
-            </div>
-
             {/* clear all pins */}
             <Button
               variant="ghost"
@@ -438,6 +449,43 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
               </DropdownMenuContent>
             </DropdownMenu>
 
+            {/* filter by 6 momths */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  {monthView === "ALL"
+                    ? "All Months"
+                    : monthView === "FIRST_6"
+                    ? "First 6 Months"
+                    : "Last 6 Months"}
+                  <ChevronDownIcon />
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent align="end">
+                <DropdownMenuCheckboxItem
+                  checked={monthView === "ALL"}
+                  onCheckedChange={() => setMonthView("ALL")}
+                >
+                  All Months
+                </DropdownMenuCheckboxItem>
+
+                <DropdownMenuCheckboxItem
+                  checked={monthView === "FIRST_6"}
+                  onCheckedChange={() => setMonthView("FIRST_6")}
+                >
+                  First 6 Months
+                </DropdownMenuCheckboxItem>
+
+                <DropdownMenuCheckboxItem
+                  checked={monthView === "LAST_6"}
+                  onCheckedChange={() => setMonthView("LAST_6")}
+                >
+                  Last 6 Months
+                </DropdownMenuCheckboxItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
             {/* search input */}
             <Input
               placeholder="Search by MCR, name, or year"
@@ -445,6 +493,13 @@ const PlanningOverviewTable: React.FC<PlanningOverviewTableProps> = ({
               onChange={(e) => table.setGlobalFilter(e.target.value)}
               className="h-8 w-64"
             />
+          </div>
+
+          {/* show current pin size */}
+          <div className="text-sm text-gray-600 space-x-3">
+            <span>Total results: {filteredResidents.length}</span>
+            <span>Showing: {table.getRowModel().rows.length}</span>
+            <span>Selected: {pinnedMcrs?.size ?? 0}</span>
           </div>
         </div>
 
