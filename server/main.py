@@ -54,6 +54,7 @@ def _build_postprocess_payload(
         "resident_sr_preferences": _deepcopy(
             base_input.get("resident_sr_preferences") or []
         ),
+        "chosen_sr_by_resident": _deepcopy(base_input.get("chosen_sr_by_resident") or []),
         "postings": _deepcopy(base_input.get("postings") or []),
         "weightages": _deepcopy(base_input.get("weightages") or {}),
         "balancing_deviations": _deepcopy(base_input.get("balancing_deviations") or {}),

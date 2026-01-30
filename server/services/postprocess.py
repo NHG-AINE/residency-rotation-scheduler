@@ -16,6 +16,7 @@ def compute_postprocess(payload: Dict) -> Dict:
     resident_history_input: List[Dict] = payload.get("resident_history", [])
     resident_preferences: List[Dict] = payload.get("resident_preferences", [])
     resident_sr_preferences: List[Dict] = payload.get("resident_sr_preferences", [])
+    chosen_sr_by_resident: Dict[str, str] = payload.get("chosen_sr_by_resident", {})
     postings: List[Dict] = payload.get("postings", [])
     weightages: Dict = dict(payload.get("weightages", {}) or {})
     balancing_deviations: Dict = dict(payload.get("balancing_deviations", {}) or {})

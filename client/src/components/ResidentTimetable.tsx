@@ -108,6 +108,7 @@ const ResidentTimetable: React.FC<Props> = ({
     postingMap,
     preferenceMap,
     srPreferenceMap,
+    chosenSrBase,
     pastYearBlockPostings,
     initialCurrentYearBlockPostings,
     electiveCounts,
@@ -115,7 +116,6 @@ const ResidentTimetable: React.FC<Props> = ({
     optimisationScoreRaw,
     optimisationScoreNormalised,
     residentIndex,
-    assignedSrPostingCode,
     electivePreferenceBases,
     corePostingBases,
   } = useMemo(() => {
@@ -161,21 +161,11 @@ const ResidentTimetable: React.FC<Props> = ({
         return m;
       }, {});
 
-    const srPreferenceBases = Object.values(srPreferenceMap)
-      .map((base) => base?.trim())
-      .filter((base): base is string => Boolean(base));
+    const chosenSrBase = apiResponse?.chosen_sr_by_resident?.[resident.mcr]?.trim() || undefined;
 
     const electivePreferenceBases = Object.values(preferenceMap)
       .map((code) => code?.split(" (")[0]?.trim())
       .filter((base): base is string => Boolean(base));
-
-    const assignedSrPostingCode = currentYear
-      .filter((h) => !h.is_leave && h.posting_code)
-      .map((h) => h.posting_code as string)
-      .find((code) => {
-        const base = code.split(" (")[0]?.trim();
-        return base && srPreferenceBases.includes(base);
-      });
 
     const electiveCounts = allHistory
       .filter(
@@ -209,14 +199,14 @@ const ResidentTimetable: React.FC<Props> = ({
       postingMap,
       preferenceMap,
       srPreferenceMap,
+      chosenSrBase,
       pastYearBlockPostings,
       initialCurrentYearBlockPostings,
       electiveCounts,
       currentYearItemIds,
       optimisationScoreRaw,
       optimisationScoreNormalised,
-      residentIndex,
-      assignedSrPostingCode,
+      residentIndex,      
       electivePreferenceBases,
       corePostingBases,
     };
@@ -257,10 +247,6 @@ const ResidentTimetable: React.FC<Props> = ({
       "text-sm",
       fulfilled ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
     );
-
-  const assignedSrBase = assignedSrPostingCode
-    ? assignedSrPostingCode.split(" (")[0]?.trim()
-    : undefined;
 
   // define current evolving state for current year block postings
   const [currentYearBlockPostings, setCurrentYearBlockPostings] =
@@ -792,7 +778,7 @@ const ResidentTimetable: React.FC<Props> = ({
                     ([rank, base]) => {
                       const trimmedBase = base?.trim() ?? "";
                       const isAssignedSr =
-                        assignedSrBase && trimmedBase === assignedSrBase;
+                        chosenSrBase && trimmedBase === chosenSrBase;
                       const isCoreSrBase =
                         trimmedBase.length > 0 &&
                         corePostingBases.has(trimmedBase);
@@ -886,19 +872,19 @@ const ResidentTimetable: React.FC<Props> = ({
                 </TableHeader>
                 <TableBody>
                   {Object.entries(electiveCounts).map(([code, count]) => {
-                    const isAssignedSr =
-                      assignedSrPostingCode && code === assignedSrPostingCode;
+                    const base = code.split(" (")[0].trim();
+                    const isChosenSr = chosenSrBase && base === chosenSrBase;
                     return (
                       <TableRow
                         key={code}
                         className={cn(
-                          isAssignedSr &&
+                          isChosenSr &&
                             "bg-green-50 hover:bg-green-100 font-semibold border border-green-200"
                         )}
                       >
                         <TableCell className="text-center align-middle">
                           {postingMap[code]?.posting_code || code}
-                          {isAssignedSr && (
+                          {isChosenSr && (
                             <Badge className="ml-2 text-xs bg-green-200 text-green-900">
                               Assigned
                             </Badge>
