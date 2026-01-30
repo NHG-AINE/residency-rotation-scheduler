@@ -1700,6 +1700,9 @@ def allocate_timetable(
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         logger.info("Model is feasible. Preparing output for post-processing...")
 
+        # the SR chosen by the solver
+        chosen_sr_by_resident = {}
+
         # log chosen SR per resident (if any)
         for resident in residents:
             mcr = resident["mcr"]
@@ -1710,6 +1713,7 @@ def allocate_timetable(
                 if solver.Value(flag):
                     chosen_sr = base_names.get(p, p)
                     break
+            chosen_sr_by_resident[mcr]= chosen_sr
             logger.info("Chosen SR for %s: %s", mcr, chosen_sr or "None")
 
         # extract solver assignments for downstream post-processing
@@ -1763,7 +1767,8 @@ def allocate_timetable(
             "residents": residents,
             "resident_history": resident_history,
             "resident_preferences": resident_preferences,
-            "resident_sr_preferences": resident_sr_preferences,
+            "resident_sr_preferences": resident_sr_preferences, 
+            "chosen_sr_by_resident": chosen_sr_by_resident,
             "postings": postings,
             "weightages": weightages,
             "balancing_deviations": balancing_deviations,
