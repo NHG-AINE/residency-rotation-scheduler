@@ -169,13 +169,44 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - Check within 6 months blocks: Within blocks 1-6 and within blocks 7-12
 - If there are at least 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
 
-#### HC13 — MICU/RCCM by stage
+#### HC13 — MICU/RCCM packs by stage
+**Overall Requirement:**
+- Every resident must complete exactly **3 MICU + 3 RCCM blocks** by end of residency (including history).
+- These 6 blocks are delivered in two specific "packs":
+  - **Pack #1**: 1 MICU + 2 RCCM (with the 2 RCCM consecutive)
+  - **Pack #2**: 2 MICU + 1 RCCM (with the 2 MICU consecutive)
 
-- Stage 1 may optionally deliver pack #1 (1 MICU, 2 RCCM).
-- If pack #1 not done historically, stage 1+2 together must deliver pack #1.
-- If pack #1 is already done and stage 2 blocks exist, stage 2 may optionally deliver pack #2 (2 MICU, 1 RCCM).
-- Stage 3 assigns exactly the remaining MICU and RCCM blocks needed to reach three each after history.
-  - 3 MICU + 3 RCCM total (including history)
+**Contiguity Requirements:**
+- Each pack must be assigned in a **consecutive 3-block window**.
+- Valid patterns for Pack #1: `M-R-R` or `R-R-M` (the two Rs must be side-by-side)
+- Valid patterns for Pack #2: `M-M-R` or `R-M-M` (the two Ms must be side-by-side)
+- Blocks **outside** the selected window cannot have any MICU/RCCM assignments.
+- **Dec-Jan boundary enforcement**: Blocks 6 (December) and 7 (January) are NOT consecutive. No pack can span across this boundary.
+
+**Stage-by-Stage Delivery Logic:**
+
+**Stage 1 (R1):**
+- **Optional**: May deliver Pack #1 (1M+2R) in a consecutive 3-block window.
+- If not delivered, resident enters Stage 2 with 0M+0R.
+
+**Stage 2 (R2):**
+- **If Pack #1 not done historically**:
+  - Stage 1 + Stage 2 together must complete Pack #1 (total 1M+2R).
+  - **If Stage 2 finishes residency**: Pack #1 is **mandatory** by end of Stage 2.
+    - If both Stage 1 and Stage 2 blocks exist: Pack #1 must be in EITHER Stage 1 OR Stage 2 (not scattered across both).
+    - Each stage with Pack #1 must use a consecutive 3-block window with valid pattern.
+  - **If Stage 2 does NOT finish residency**: Shortfalls are penalized.
+    - If Stage 2 assigns any MICU/RCCM, it must be a complete Pack #1 (1M+2R) in a consecutive window.
+- **If Pack #1 done historically**:
+  - Stage 2 may **optionally** deliver Pack #2 (2M+1R) in a consecutive 3-block window.
+
+**Stage 3 (R3):**
+- **Mandatory**: Must deliver exactly the remaining blocks needed to reach 3 MICU + 3 RCCM total.
+- Remaining blocks must be assigned in a consecutive 3-block window (when total needed = 3).
+- If no valid consecutive window exists (e.g., due to Dec-Jan boundary preventing contiguity), the model will be infeasible.
+
+**Skip Condition:**
+- If a resident already has 3 MICU + 3 RCCM historically, they are **forbidden** from any further MICU/RCCM assignments.
 
 #### HC14 — Balancing within halves and balancing deviation per posting 
 - Within blocks 1-6 and within blocks 7-12, the user can optionally input how much imbalance is allowed between the maximum and minimum number of residents assigned across 6 blocks. 

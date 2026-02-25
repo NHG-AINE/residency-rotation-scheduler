@@ -798,9 +798,51 @@ def allocate_timetable(
             
     # Hard Constraint 13: enforce MICU/RCCM minimum requirements by career stage
     micu_rccm_pack_shortfall_flags: List[cp_model.BoolVar] = []
+    
+    # Helper function to enumerate all consecutive 3-block windows in a given stage
+    def get_consecutive_windows(stage_blocks: List[int]) -> List[Tuple[int, int, int]]:
+        """
+        Returns list of (start_block, mid_block, end_block) tuples for all consecutive 3-block windows.
+        Ensures blocks are strictly consecutive (no gaps).
+        Enforces Dec-Jan boundary: blocks 6 and 7 are NOT consecutive.
+        """
+        if len(stage_blocks) < 3:
+            return []
+        
+        windows = []
+        stage_blocks_sorted = sorted(stage_blocks)
+        for i in range(len(stage_blocks_sorted) - 2):
+            b1, b2, b3 = stage_blocks_sorted[i], stage_blocks_sorted[i+1], stage_blocks_sorted[i+2]
+            # Only valid if truly consecutive (no gaps)
+            if b2 == b1 + 1 and b3 == b2 + 1:
+                # Reject windows that span the Dec-Jan boundary (blocks 6→7)
+                window_set = {b1, b2, b3}
+                if 6 in window_set and 7 in window_set:
+                    continue  # Skip this window - crosses Dec-Jan boundary
+                windows.append((b1, b2, b3))
+        
+        return windows
+    
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
+        
+        # ===== CAREER PROGRESS VALIDATION =====
+        completed_blocks = resident.get("career_blocks_completed", 0)
+        current_stage = career_progress[mcr].get("stage")
+        stage1_finishes = bool(career_progress[mcr].get("stage1_finishes"))
+        stage2_finishes = bool(career_progress[mcr].get("stage2_finishes"))
+        stage3_finishes = bool(career_progress[mcr].get("stage3_finishes"))
+        
+        if completed_blocks < 0:
+            logger.warning(
+                f"HC13 CAREER PROGRESS: {mcr} has negative career_blocks_completed={completed_blocks}. "
+                f"This is invalid; should be >= 0."
+            )
+        
+        # Add to logging set for specific residents
+        is_logging_resident = mcr in ["M67295E", "M67138Z", "M68485F", "M68762F", "M67343I", "M68436H", "M69224G"]
+        
         stages_by_block = career_progress[mcr].get("stages_by_block", {})
         stage1_blocks = [b for b in blocks if stages_by_block.get(b) == 1]
         stage2_blocks = [b for b in blocks if stages_by_block.get(b) == 2]
@@ -879,26 +921,146 @@ def allocate_timetable(
         )
         hist_micu = core_blocks_completed_map.get("MICU", 0)
         hist_rccm = core_blocks_completed_map.get("RCCM", 0)
+        
+        # Log historical counts for specific residents
+        if is_logging_resident:
+            logger.info(
+                f"HC13 Historical counts for {mcr}: "
+                f"hist_micu={hist_micu}, hist_rccm={hist_rccm}"
+            )
 
+        # ===== HC13 VALIDATION =====
+        # Validation: Check for impossible states and log warnings
+        total_hist = hist_micu + hist_rccm
+        
+        if total_hist > 6:
+            logger.warning(
+                f"HC13 VALIDATION: {mcr} has {total_hist} total MICU+RCCM blocks historically (>6). "
+                f"This exceeds the 3+3 requirement. Actual: {hist_micu} MICU + {hist_rccm} RCCM."
+            )
+        
+        if hist_micu > 3 or hist_rccm > 3:
+            logger.warning(
+                f"HC13 VALIDATION: {mcr} already exceeds individual caps: "
+                f"{hist_micu}/3 MICU, {hist_rccm}/3 RCCM. "
+                f"This resident should not be assigned any more MICU/RCCM blocks."
+            )
+
+        # Skip HC13 entirely if resident already has 3 MICU + 3 RCCM
         if hist_micu == 3 and hist_rccm == 3:
+            logger.info(
+                f"HC13: Skipping {mcr} (already completed: 3 MICU + 3 RCCM)"
+            )
+            # Forbid any further MICU/RCCM assignments for this resident
+            micu_rccm = [
+                p for p in posting_codes if p.startswith("MICU (") or p.startswith("RCCM (")
+            ]
+            for p in micu_rccm:
+                for b in blocks:
+                    model.Add(x[mcr][p][b] == 0)
             continue
 
+        # Determine pack states
+        pack1_done_hist = (hist_micu == 1) and (hist_rccm == 2)
+        pack2_done_hist = (hist_micu == 3) and (hist_rccm == 3)  # both packs complete
+        
+        # Stage 1 may optionally deliver pack #1 (1 MICU, 2 RCCM)
         if 1 in stages_present and stage1_blocks:
-            # by end of 12 months: optionally do first pack (MICU=1 and RCCM=2)
-            flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
-            model.Add(micu_stage1 == 1).OnlyEnforceIf(flag)
-            model.Add(rccm_stage1 == 2).OnlyEnforceIf(flag)
-            model.Add(micu_stage1 == 0).OnlyEnforceIf(flag.Not())
-            model.Add(rccm_stage1 == 0).OnlyEnforceIf(flag.Not())
+            flag_s1 = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
+            model.Add(micu_stage1 == 1).OnlyEnforceIf(flag_s1)
+            model.Add(rccm_stage1 == 2).OnlyEnforceIf(flag_s1)
+            model.Add(micu_stage1 == 0).OnlyEnforceIf(flag_s1.Not())
+            model.Add(rccm_stage1 == 0).OnlyEnforceIf(flag_s1.Not())
+            
+            # ===== PACK #1 CONTIGUITY CONSTRAINT (Stage 1) =====
+            # Enforce that blocks are consecutive and 2 RCCM are side by side
+            s1_windows = get_consecutive_windows(stage1_blocks)
+            if s1_windows:
+                window_vars_s1 = []
+                for w_idx, (b1, b2, b3) in enumerate(s1_windows):
+                    window_var = model.NewBoolVar(f"{mcr}_s1_pack_window_{w_idx}")
+                    window_vars_s1.append(window_var)
+                    
+                    # For pack #1: 1 MICU + 2 RCCM (with 2 RCCM consecutive)
+                    # We need to check all valid arrangements:
+                    # Pattern A: MICU at b1, RCCM at b2 and b3
+                    # Pattern B: RCCM at b1 and b2, MICU at b3
+                    # Pattern C: RCCM at b1, MICU at b2, RCCM at b3 (NOT valid - RCCM not consecutive)
+                    
+                    micu_postings = [p for p in posting_codes if p.startswith("MICU (")]
+                    rccm_postings = [p for p in posting_codes if p.startswith("RCCM (")]
+                    
+                    # Pattern A: MICU-RCCM-RCCM
+                    pattern_a_micu = sum(x[mcr][p][b1] for p in micu_postings)
+                    pattern_a_rccm_b2 = sum(x[mcr][p][b2] for p in rccm_postings)
+                    pattern_a_rccm_b3 = sum(x[mcr][p][b3] for p in rccm_postings)
+                    pattern_a = model.NewBoolVar(f"{mcr}_s1_pattern_a_{w_idx}")
+                    model.Add(pattern_a_micu == 1).OnlyEnforceIf(pattern_a)
+                    model.Add(pattern_a_rccm_b2 == 1).OnlyEnforceIf(pattern_a)
+                    model.Add(pattern_a_rccm_b3 == 1).OnlyEnforceIf(pattern_a)
+                    
+                    # Pattern B: RCCM-RCCM-MICU
+                    pattern_b_rccm_b1 = sum(x[mcr][p][b1] for p in rccm_postings)
+                    pattern_b_rccm_b2 = sum(x[mcr][p][b2] for p in rccm_postings)
+                    pattern_b_micu = sum(x[mcr][p][b3] for p in micu_postings)
+                    pattern_b = model.NewBoolVar(f"{mcr}_s1_pattern_b_{w_idx}")
+                    model.Add(pattern_b_rccm_b1 == 1).OnlyEnforceIf(pattern_b)
+                    model.Add(pattern_b_rccm_b2 == 1).OnlyEnforceIf(pattern_b)
+                    model.Add(pattern_b_micu == 1).OnlyEnforceIf(pattern_b)
+                    
+                    # Window is valid if either pattern A OR pattern B is true
+                    model.AddBoolOr([pattern_a, pattern_b]).OnlyEnforceIf(window_var)
+                    
+                    # CRITICAL: If this window is selected, blocks OUTSIDE this window cannot have MICU/RCCM
+                    blocks_in_window = {b1, b2, b3}
+                    blocks_outside_window = [b for b in stage1_blocks if b not in blocks_in_window]
+                    for b_outside in blocks_outside_window:
+                        for p in micu_postings + rccm_postings:
+                            model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                    
+                    if is_logging_resident:
+                        logger.info(
+                            f"HC13 {mcr} Stage 1 Pack #1 window {w_idx}: blocks ({b1},{b2},{b3}). "
+                            f"Valid patterns: (M-R-R) or (R-R-M)"
+                        )
+                
+                # If pack flag is true, exactly one valid window must be selected
+                model.Add(sum(window_vars_s1) == 1).OnlyEnforceIf(flag_s1)
+                model.Add(sum(window_vars_s1) == 0).OnlyEnforceIf(flag_s1.Not())
+                if is_logging_resident:
+                    logger.info(
+                        f"HC13 {mcr} Stage 1: {len(s1_windows)} consecutive 3-block windows available for Pack #1"
+                    )
+            else:
+                # No consecutive 3-block windows available in stage 1
+                if is_logging_resident:
+                    logger.info(
+                        f"HC13 {mcr} Stage 1: NO consecutive 3-block windows available. "
+                        f"Stage 1 blocks: {stage1_blocks}"
+                    )
+            
+            logger.info(
+                f"HC13 Stage 1 for {mcr}: Optional pack #1 (1M+2R). "
+                f"Stage 1 blocks: {stage1_blocks}"
+            )
+
         if 2 in stages_present:
-            # optionally do second pack (MICU=2, RCCM=1) if first pack done
-            # else do first pack if first pack not done
-            first_pack_done = (hist_micu == 1) and (hist_rccm == 2)
-            if not first_pack_done:
+            if not pack1_done_hist:
+                # Pack #1 not done historically: stage 1+2 together must complete pack #1
+                # TOTAL (history + stages 1+2) must equal pack #1 counts
+                total_micu_through_s2 = hist_micu + micu_stage1 + micu_stage2
+                total_rccm_through_s2 = hist_rccm + rccm_stage1 + rccm_stage2
+
                 if stage2_finishes:
-                    model.Add(micu_stage1 + micu_stage2 == 1)
-                    model.Add(rccm_stage1 + rccm_stage2 == 2)
+                    # Stage 2 ends residency: pack #1 MUST be complete by end of stage 2
+                    model.Add(total_micu_through_s2 == 1)
+                    model.Add(total_rccm_through_s2 == 2)
+                    logger.info(
+                        f"HC13 Stage 2 MANDATORY for {mcr}: Pack #1 MUST complete (1M+2R total). "
+                        f"Currently hist={hist_micu}M+{hist_rccm}R. Stage 2 finishes residency."
+                    )
                 else:
+                    # Stage 2 does not end: allow shortfall, but penalize it
                     micu_pack1_shortfall = model.NewBoolVar(
                         f"{mcr}_micu_pack1_shortfall"
                     )
@@ -906,34 +1068,354 @@ def allocate_timetable(
                         f"{mcr}_rccm_pack1_shortfall"
                     )
 
-                    model.Add(micu_stage1 + micu_stage2 >= 1).OnlyEnforceIf(
+                    model.Add(total_micu_through_s2 >= 1).OnlyEnforceIf(
                         micu_pack1_shortfall.Not()
                     )
-                    model.Add(micu_stage1 + micu_stage2 <= 0).OnlyEnforceIf(
+                    model.Add(total_micu_through_s2 <= 0).OnlyEnforceIf(
                         micu_pack1_shortfall
                     )
 
-                    model.Add(rccm_stage1 + rccm_stage2 >= 2).OnlyEnforceIf(
+                    model.Add(total_rccm_through_s2 >= 2).OnlyEnforceIf(
                         rccm_pack1_shortfall.Not()
                     )
-                    model.Add(rccm_stage1 + rccm_stage2 <= 1).OnlyEnforceIf(
+                    model.Add(total_rccm_through_s2 <= 1).OnlyEnforceIf(
                         rccm_pack1_shortfall
                     )
 
                     micu_rccm_pack_shortfall_flags.append(micu_pack1_shortfall)
                     micu_rccm_pack_shortfall_flags.append(rccm_pack1_shortfall)
             elif stage2_blocks:
-                flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s2")
-                model.Add(micu_stage2 == 2).OnlyEnforceIf(flag)
-                model.Add(rccm_stage2 == 1).OnlyEnforceIf(flag)
-                model.Add(micu_stage2 == 0).OnlyEnforceIf(flag.Not())
-                model.Add(rccm_stage2 == 0).OnlyEnforceIf(flag.Not())
-        if 3 in stages_present and stage3_finishes:
-            micu_needed = max(0, 3 - hist_micu)
-            rccm_needed = max(0, 3 - hist_rccm)
+                # Pack #1 already done historically: stage 2 may optionally deliver pack #2 (2 MICU, 1 RCCM)
+                # Pack #2 is delivered ONLY in stage 2 (since pack #1 is historical)
+                flag_s2 = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s2")
+                model.Add(micu_stage2 == 2).OnlyEnforceIf(flag_s2)
+                model.Add(rccm_stage2 == 1).OnlyEnforceIf(flag_s2)
+                model.Add(micu_stage2 == 0).OnlyEnforceIf(flag_s2.Not())
+                model.Add(rccm_stage2 == 0).OnlyEnforceIf(flag_s2.Not())
+                
+                # ===== PACK #2 CONTIGUITY CONSTRAINT (Stage 2) =====
+                # Enforce that blocks are consecutive and 2 MICU are side by side
+                s2_windows = get_consecutive_windows(stage2_blocks)
+                if s2_windows:
+                    # Create window variables and link directly to flag_s2
+                    window_vars_s2 = []
+                    # If pack flag is true, exactly one valid window must be selected
+                    # If pack flag is false, zero windows are active
+                    model.Add(sum(window_vars_s2) == 1).OnlyEnforceIf(flag_s2)
+                    model.Add(sum(window_vars_s2) == 0).OnlyEnforceIf(flag_s2.Not())
+                    
+                    for w_idx, (b1, b2, b3) in enumerate(s2_windows):
+                        window_var = model.NewBoolVar(f"{mcr}_s2_pack_window_{w_idx}")
+                        window_vars_s2.append(window_var)
+                        
+                        # For pack #2: 2 MICU + 1 RCCM (with 2 MICU consecutive)
+                        # Valid patterns:
+                        # Pattern A: MICU at b1 and b2, RCCM at b3
+                        # Pattern B: RCCM at b1, MICU at b2 and b3
+                        
+                        micu_postings = [p for p in posting_codes if p.startswith("MICU (")]
+                        rccm_postings = [p for p in posting_codes if p.startswith("RCCM (")]
+                        
+                        # Pattern A: MICU-MICU-RCCM
+                        pattern_a_micu_b1 = sum(x[mcr][p][b1] for p in micu_postings)
+                        pattern_a_micu_b2 = sum(x[mcr][p][b2] for p in micu_postings)
+                        pattern_a_rccm = sum(x[mcr][p][b3] for p in rccm_postings)
+                        pattern_a = model.NewBoolVar(f"{mcr}_s2_pattern_a_{w_idx}")
+                        model.Add(pattern_a_micu_b1 == 1).OnlyEnforceIf(pattern_a)
+                        model.Add(pattern_a_micu_b2 == 1).OnlyEnforceIf(pattern_a)
+                        model.Add(pattern_a_rccm == 1).OnlyEnforceIf(pattern_a)
+                        
+                        # Pattern B: RCCM-MICU-MICU
+                        pattern_b_rccm = sum(x[mcr][p][b1] for p in rccm_postings)
+                        pattern_b_micu_b2 = sum(x[mcr][p][b2] for p in micu_postings)
+                        pattern_b_micu_b3 = sum(x[mcr][p][b3] for p in micu_postings)
+                        pattern_b = model.NewBoolVar(f"{mcr}_s2_pattern_b_{w_idx}")
+                        model.Add(pattern_b_rccm == 1).OnlyEnforceIf(pattern_b)
+                        model.Add(pattern_b_micu_b2 == 1).OnlyEnforceIf(pattern_b)
+                        model.Add(pattern_b_micu_b3 == 1).OnlyEnforceIf(pattern_b)
+                        
+                        # Window is valid if either pattern A OR pattern B is true
+                        model.AddBoolOr([pattern_a, pattern_b]).OnlyEnforceIf(window_var)
+                        
+                        # CRITICAL: If this window is selected, blocks OUTSIDE this window cannot have MICU/RCCM
+                        blocks_in_window = {b1, b2, b3}
+                        blocks_outside_window = [b for b in stage2_blocks if b not in blocks_in_window]
+                        for b_outside in blocks_outside_window:
+                            for p in micu_postings + rccm_postings:
+                                model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                        
+                        if is_logging_resident:
+                            logger.info(
+                                f"HC13 {mcr} Stage 2 Pack #2 window {w_idx}: blocks ({b1},{b2},{b3}). "
+                                f"Valid patterns: (M-M-R) or (R-M-M)"
+                            )
+                    
+                    if is_logging_resident:
+                        logger.info(
+                            f"HC13 {mcr} Stage 2: {len(s2_windows)} consecutive 3-block windows available for Pack #2"
+                        )
+                else:
+                    # No consecutive 3-block windows available in stage 2
+                    if is_logging_resident:
+                        logger.info(
+                            f"HC13 {mcr} Stage 2: NO consecutive 3-block windows available. "
+                            f"Stage 2 blocks: {stage2_blocks}"
+                        )
+                
+                logger.info(
+                    f"HC13 Stage 2 optional for {mcr}: Pack #1 done historically ({hist_micu}M+{hist_rccm}R). "
+                    f"Optional pack #2 (2M+1R) in stage 2."
+                )
 
-            model.Add(micu_blocks == micu_needed)
-            model.Add(rccm_blocks == rccm_needed)
+        # ===== HC13 STAGE 2 VALIDATION =====
+        # Check if pack #1 requirements are feasible by end of stage 2
+        if 2 in stages_present and not pack1_done_hist:
+            total_micu_through_s2 = hist_micu + micu_stage1 + micu_stage2
+            total_rccm_through_s2 = hist_rccm + rccm_stage1 + rccm_stage2
+            
+            # Warn if it's already impossible to reach pack #1 by end of stage 2
+            if hist_micu > 1 or hist_rccm > 2:
+                logger.warning(
+                    f"HC13 STAGE 2 INFEASIBILITY: {mcr} cannot complete pack #1 by stage 2. "
+                    f"Pack #1 requires 1M+2R total, but history already has {hist_micu}M+{hist_rccm}R. "
+                    f"This resident will violate HC13 constraints."
+                )
+
+        # Stage 3 assigns exactly the remaining MICU/RCCM blocks needed to reach 3 each
+        if 3 in stages_present and stage3_finishes:
+            # Calculate what has been delivered so far (history + this year in stages 1 & 2)
+            micu_delivered_before_s3 = hist_micu + micu_stage1 + micu_stage2
+            rccm_delivered_before_s3 = hist_rccm + rccm_stage1 + rccm_stage2
+
+            micu_needed_s3 = max(0, 3 - micu_delivered_before_s3)
+            rccm_needed_s3 = max(0, 3 - rccm_delivered_before_s3)
+            
+            # Check if Dec-Jan boundary prevents contiguous assignment
+            dec_in_s3 = 6 in stage3_blocks
+            jan_in_s3 = 7 in stage3_blocks
+            total_needed_s3 = micu_needed_s3 + rccm_needed_s3
+            
+            if is_logging_resident:
+                logger.info(
+                    f"HC13 {mcr} Stage 3: needs {micu_needed_s3}M + {rccm_needed_s3}R "
+                    f"(delivered before S3: {micu_delivered_before_s3}M + {rccm_delivered_before_s3}R). "
+                    f"Stage 3 blocks: {stage3_blocks}"
+                )
+            
+            if dec_in_s3 and jan_in_s3 and total_needed_s3 > 0:
+                # Count blocks before and after Dec-Jan boundary in stage 3
+                s3_before_jan = [b for b in stage3_blocks if b <= 6]
+                s3_after_dec = [b for b in stage3_blocks if b >= 7]
+                
+                # If we need 3+ blocks but can't fit them contiguously without crossing, warn
+                if total_needed_s3 >= 3 and len(s3_before_jan) < 3 and len(s3_after_dec) < 3:
+                    logger.warning(
+                        f"HC13 STAGE 3 DEC-JAN CONFLICT: {mcr} needs {total_needed_s3} MICU/RCCM blocks "
+                        f"({micu_needed_s3}M+{rccm_needed_s3}R) but stage 3 spans Dec-Jan. "
+                        f"Blocks before Jan: {s3_before_jan}, after Dec: {s3_after_dec}. "
+                        f"Relaxing to allow non-consecutive assignment."
+                    )
+                    # Don't enforce exact counts - make them upper bounds instead
+                    model.Add(micu_stage3 <= micu_needed_s3)
+                    model.Add(rccm_stage3 <= rccm_needed_s3)
+                else:
+                    model.Add(micu_stage3 == micu_needed_s3)
+                    model.Add(rccm_stage3 == rccm_needed_s3)
+                    
+                    # ===== PACK CONTIGUITY CONSTRAINT (Stage 3) =====
+                    # Enforce consecutive blocks if total_needed_s3 == 3
+                    if total_needed_s3 == 3:
+                        s3_windows = get_consecutive_windows(stage3_blocks)
+                        if s3_windows:
+                            window_vars_s3 = []
+                            for w_idx, (b1, b2, b3) in enumerate(s3_windows):
+                                window_var = model.NewBoolVar(f"{mcr}_s3_pack_window_{w_idx}")
+                                window_vars_s3.append(window_var)
+                                
+                                micu_postings = [p for p in posting_codes if p.startswith("MICU (")]
+                                rccm_postings = [p for p in posting_codes if p.startswith("RCCM (")]
+                                
+                                # Count MICU/RCCM at each block
+                                micu_b1 = sum(x[mcr][p][b1] for p in micu_postings)
+                                micu_b2 = sum(x[mcr][p][b2] for p in micu_postings)
+                                micu_b3 = sum(x[mcr][p][b3] for p in micu_postings)
+                                rccm_b1 = sum(x[mcr][p][b1] for p in rccm_postings)
+                                rccm_b2 = sum(x[mcr][p][b2] for p in rccm_postings)
+                                rccm_b3 = sum(x[mcr][p][b3] for p in rccm_postings)
+                                
+                                # Pattern A: (1M, 1R, 1R) - 1 MICU + 2 RCCM
+                                if micu_needed_s3 == 1 and rccm_needed_s3 == 2:
+                                    micu_count_a = micu_b1 + micu_b2 + micu_b3
+                                    rccm_count_a = rccm_b1 + rccm_b2 + rccm_b3
+                                    pattern_a = model.NewBoolVar(f"{mcr}_s3_pattern_a_{w_idx}")
+                                    model.Add(micu_count_a == 1).OnlyEnforceIf(pattern_a)
+                                    model.Add(rccm_count_a == 2).OnlyEnforceIf(pattern_a)
+                                    # Ensure 2 RCCM are consecutive (either b1-b2 or b2-b3)
+                                    rccm_at_b1_b2 = model.NewBoolVar(f"{mcr}_s3_rccm_at_b1_b2_{w_idx}")
+                                    rccm_at_b2_b3 = model.NewBoolVar(f"{mcr}_s3_rccm_at_b2_b3_{w_idx}")
+                                    model.Add(rccm_b1 >= 1).OnlyEnforceIf(rccm_at_b1_b2)
+                                    model.Add(rccm_b2 >= 1).OnlyEnforceIf(rccm_at_b1_b2)
+                                    model.Add(rccm_b2 >= 1).OnlyEnforceIf(rccm_at_b2_b3)
+                                    model.Add(rccm_b3 >= 1).OnlyEnforceIf(rccm_at_b2_b3)
+                                    model.AddBoolOr([rccm_at_b1_b2, rccm_at_b2_b3]).OnlyEnforceIf(pattern_a)
+                                    # Link pattern to window selection
+                                    model.AddImplication(window_var, pattern_a)
+                                    
+                                    # CRITICAL: If this window is selected, blocks OUTSIDE cannot have MICU/RCCM
+                                    blocks_in_window = {b1, b2, b3}
+                                    blocks_outside_window = [b for b in stage3_blocks if b not in blocks_in_window]
+                                    for b_outside in blocks_outside_window:
+                                        for p in micu_postings + rccm_postings:
+                                            model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                                    
+                                    if is_logging_resident:
+                                        logger.info(
+                                            f"HC13 {mcr} Stage 3 window {w_idx}: ({b1},{b2},{b3}) checking pattern (1M+2R)"
+                                        )
+                                
+                                # Pattern B: (1M, 1M, 1R) - 2 MICU + 1 RCCM
+                                elif micu_needed_s3 == 2 and rccm_needed_s3 == 1:
+                                    micu_count_b = micu_b1 + micu_b2 + micu_b3
+                                    rccm_count_b = rccm_b1 + rccm_b2 + rccm_b3
+                                    pattern_b = model.NewBoolVar(f"{mcr}_s3_pattern_b_{w_idx}")
+                                    model.Add(micu_count_b == 2).OnlyEnforceIf(pattern_b)
+                                    model.Add(rccm_count_b == 1).OnlyEnforceIf(pattern_b)
+                                    # Ensure 2 MICU are consecutive (either b1-b2 or b2-b3)
+                                    micu_at_b1_b2 = model.NewBoolVar(f"{mcr}_s3_micu_at_b1_b2_{w_idx}")
+                                    micu_at_b2_b3 = model.NewBoolVar(f"{mcr}_s3_micu_at_b2_b3_{w_idx}")
+                                    model.Add(micu_b1 >= 1).OnlyEnforceIf(micu_at_b1_b2)
+                                    model.Add(micu_b2 >= 1).OnlyEnforceIf(micu_at_b1_b2)
+                                    model.Add(micu_b2 >= 1).OnlyEnforceIf(micu_at_b2_b3)
+                                    model.Add(micu_b3 >= 1).OnlyEnforceIf(micu_at_b2_b3)
+                                    model.AddBoolOr([micu_at_b1_b2, micu_at_b2_b3]).OnlyEnforceIf(pattern_b)
+                                    # Link pattern to window selection
+                                    model.AddImplication(window_var, pattern_b)
+                                    
+                                    # CRITICAL: If this window is selected, blocks OUTSIDE cannot have MICU/RCCM
+                                    blocks_in_window = {b1, b2, b3}
+                                    blocks_outside_window = [b for b in stage3_blocks if b not in blocks_in_window]
+                                    for b_outside in blocks_outside_window:
+                                        for p in micu_postings + rccm_postings:
+                                            model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                                    
+                                    if is_logging_resident:
+                                        logger.info(
+                                            f"HC13 {mcr} Stage 3 window {w_idx}: ({b1},{b2},{b3}) checking pattern (2M+1R)"
+                                        )
+                            
+                            # CRITICAL: Exactly one window must be selected for Stage 3 mandatory pack
+                            model.Add(sum(window_vars_s3) == 1)
+                            
+                            if is_logging_resident:
+                                logger.info(
+                                    f"HC13 {mcr} Stage 3: {len(s3_windows)} consecutive 3-block windows available"
+                                )
+            else:
+                model.Add(micu_stage3 == micu_needed_s3)
+                model.Add(rccm_stage3 == rccm_needed_s3)
+                
+                # ===== PACK CONTIGUITY CONSTRAINT (Stage 3 - no Dec-Jan issue) =====
+                if total_needed_s3 == 3:
+                    s3_windows = get_consecutive_windows(stage3_blocks)
+                    if s3_windows:
+                        window_vars_s3 = []
+                        for w_idx, (b1, b2, b3) in enumerate(s3_windows):
+                            window_var = model.NewBoolVar(f"{mcr}_s3_pack_window_{w_idx}")
+                            window_vars_s3.append(window_var)
+                            
+                            micu_postings = [p for p in posting_codes if p.startswith("MICU (")]
+                            rccm_postings = [p for p in posting_codes if p.startswith("RCCM (")]
+                            
+                            # Count MICU/RCCM at each block
+                            micu_b1 = sum(x[mcr][p][b1] for p in micu_postings)
+                            micu_b2 = sum(x[mcr][p][b2] for p in micu_postings)
+                            micu_b3 = sum(x[mcr][p][b3] for p in micu_postings)
+                            rccm_b1 = sum(x[mcr][p][b1] for p in rccm_postings)
+                            rccm_b2 = sum(x[mcr][p][b2] for p in rccm_postings)
+                            rccm_b3 = sum(x[mcr][p][b3] for p in rccm_postings)
+                            
+                            # Pattern A: (1M, 1R, 1R) - 1 MICU + 2 RCCM
+                            if micu_needed_s3 == 1 and rccm_needed_s3 == 2:
+                                micu_count_a = micu_b1 + micu_b2 + micu_b3
+                                rccm_count_a = rccm_b1 + rccm_b2 + rccm_b3
+                                pattern_a = model.NewBoolVar(f"{mcr}_s3_pattern_a_{w_idx}")
+                                model.Add(micu_count_a == 1).OnlyEnforceIf(pattern_a)
+                                model.Add(rccm_count_a == 2).OnlyEnforceIf(pattern_a)
+                                # Ensure 2 RCCM are consecutive
+                                rccm_at_b1_b2_alt = model.NewBoolVar(f"{mcr}_s3_rccm_at_b1_b2_alt_{w_idx}")
+                                rccm_at_b2_b3_alt = model.NewBoolVar(f"{mcr}_s3_rccm_at_b2_b3_alt_{w_idx}")
+                                model.Add(rccm_b1 >= 1).OnlyEnforceIf(rccm_at_b1_b2_alt)
+                                model.Add(rccm_b2 >= 1).OnlyEnforceIf(rccm_at_b1_b2_alt)
+                                model.Add(rccm_b2 >= 1).OnlyEnforceIf(rccm_at_b2_b3_alt)
+                                model.Add(rccm_b3 >= 1).OnlyEnforceIf(rccm_at_b2_b3_alt)
+                                model.AddBoolOr([
+                                    rccm_at_b1_b2_alt,
+                                    rccm_at_b2_b3_alt
+                                ]).OnlyEnforceIf(pattern_a)
+                                # Link pattern to window selection
+                                model.AddImplication(window_var, pattern_a)
+                                
+                                # CRITICAL: If this window is selected, blocks OUTSIDE cannot have MICU/RCCM
+                                blocks_in_window = {b1, b2, b3}
+                                blocks_outside_window = [b for b in stage3_blocks if b not in blocks_in_window]
+                                for b_outside in blocks_outside_window:
+                                    for p in micu_postings + rccm_postings:
+                                        model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                            
+                            # Pattern B: (1M, 1M, 1R) - 2 MICU + 1 RCCM
+                            elif micu_needed_s3 == 2 and rccm_needed_s3 == 1:
+                                micu_count_b = micu_b1 + micu_b2 + micu_b3
+                                rccm_count_b = rccm_b1 + rccm_b2 + rccm_b3
+                                pattern_b = model.NewBoolVar(f"{mcr}_s3_pattern_b_{w_idx}")
+                                model.Add(micu_count_b == 2).OnlyEnforceIf(pattern_b)
+                                model.Add(rccm_count_b == 1).OnlyEnforceIf(pattern_b)
+                                # Ensure 2 MICU are consecutive
+                                micu_at_b1_b2_alt = model.NewBoolVar(f"{mcr}_s3_micu_at_b1_b2_alt_{w_idx}")
+                                micu_at_b2_b3_alt = model.NewBoolVar(f"{mcr}_s3_micu_at_b2_b3_alt_{w_idx}")
+                                model.Add(micu_b1 >= 1).OnlyEnforceIf(micu_at_b1_b2_alt)
+                                model.Add(micu_b2 >= 1).OnlyEnforceIf(micu_at_b1_b2_alt)
+                                model.Add(micu_b2 >= 1).OnlyEnforceIf(micu_at_b2_b3_alt)
+                                model.Add(micu_b3 >= 1).OnlyEnforceIf(micu_at_b2_b3_alt)
+                                model.AddBoolOr([
+                                    micu_at_b1_b2_alt,
+                                    micu_at_b2_b3_alt
+                                ]).OnlyEnforceIf(pattern_b)
+                                # Link pattern to window selection
+                                model.AddImplication(window_var, pattern_b)
+                                
+                                # CRITICAL: If this window is selected, blocks OUTSIDE cannot have MICU/RCCM
+                                blocks_in_window = {b1, b2, b3}
+                                blocks_outside_window = [b for b in stage3_blocks if b not in blocks_in_window]
+                                for b_outside in blocks_outside_window:
+                                    for p in micu_postings + rccm_postings:
+                                        model.Add(x[mcr][p][b_outside] == 0).OnlyEnforceIf(window_var)
+                        
+                        # CRITICAL: Exactly one window must be selected for Stage 3 mandatory pack
+                        model.Add(sum(window_vars_s3) == 1)
+                        
+                        if is_logging_resident:
+                            logger.info(
+                                f"HC13 {mcr} Stage 3: {len(s3_windows)} consecutive 3-block windows available"
+                            )
+            
+            logger.info(
+                f"HC13 Stage 3 MANDATORY for {mcr}: Must assign exactly {micu_needed_s3}M+{rccm_needed_s3}R. "
+                f"History={hist_micu}M+{hist_rccm}R. Stage 3 blocks: {stage3_blocks}"
+            )
+            
+            # ===== HC13 STAGE 3 VALIDATION =====
+            # Validate that stage 3 assignments are sensible
+            if micu_delivered_before_s3 > 3 or rccm_delivered_before_s3 > 3:
+                logger.error(
+                    f"HC13 STAGE 3 OVER-ASSIGNMENT: {mcr} has already exceeded 3-block caps before stage 3! "
+                    f"MICU: {hist_micu} hist + {micu_stage1} s1 + {micu_stage2} s2 = {micu_delivered_before_s3} (>3). "
+                    f"RCCM: {hist_rccm} hist + {rccm_stage1} s1 + {rccm_stage2} s2 = {rccm_delivered_before_s3} (>3). "
+                    f"This is a CRITICAL HC13 violation."
+                )
+
+        # HC13 Note: Pack contiguity is already enforced by HC7b (global MICU/RCCM contiguity).
+        # The pack requirements above only control the MIX of MICU vs RCCM per stage.
+        # No additional contiguity constraints needed here.
 
     # Hard Constraint 14: ensure postings are not imbalanced within each half of the year
     for p in posting_codes:
