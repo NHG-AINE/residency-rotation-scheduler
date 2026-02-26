@@ -170,6 +170,7 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - If there are at least 2 blocks with any of these: `GM`, `GRM` or `MedComm`, then there should be `ED` or any CCR within the 6 months blocks.
 
 #### HC13 — MICU/RCCM packs by stage
+
 **Overall Requirement:**
 - Every resident must complete exactly **3 MICU + 3 RCCM blocks** by end of residency (including history).
 - These 6 blocks are delivered in two specific "packs":
@@ -181,32 +182,40 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - Valid patterns for Pack #1: `M-R-R` or `R-R-M` (the two Rs must be side-by-side)
 - Valid patterns for Pack #2: `M-M-R` or `R-M-M` (the two Ms must be side-by-side)
 - Blocks **outside** the selected window cannot have any MICU/RCCM assignments.
-- **Dec-Jan boundary enforcement**: Blocks 6 (December) and 7 (January) are NOT consecutive. No pack can span across this boundary.
+- **Dec-Jan boundary enforcement**: Blocks 6 (December) and 7 (January) are NOT consecutive. No window can span from block 6 to block 7.
 
 **Stage-by-Stage Delivery Logic:**
 
 **Stage 1 (R1):**
-- **Optional**: May deliver Pack #1 (1M+2R) in a consecutive 3-block window.
-- If not delivered, resident enters Stage 2 with 0M+0R.
+- **Optional**: May deliver Pack #1 (1M+2R) in a consecutive 3-block window with valid pattern.
+- If no consecutive 3-block window exists in Stage 1, Pack #1 is not assigned.
+- If assigned, exactly one window is selected; blocks outside that window have zero MICU/RCCM.
 
 **Stage 2 (R2):**
-- **If Pack #1 not done historically**:
-  - Stage 1 + Stage 2 together must complete Pack #1 (total 1M+2R).
-  - **If Stage 2 finishes residency**: Pack #1 is **mandatory** by end of Stage 2.
-    - If both Stage 1 and Stage 2 blocks exist: Pack #1 must be in EITHER Stage 1 OR Stage 2 (not scattered across both).
-    - Each stage with Pack #1 must use a consecutive 3-block window with valid pattern.
-  - **If Stage 2 does NOT finish residency**: Shortfalls are penalized.
-    - If Stage 2 assigns any MICU/RCCM, it must be a complete Pack #1 (1M+2R) in a consecutive window.
-- **If Pack #1 done historically**:
-  - Stage 2 may **optionally** deliver Pack #2 (2M+1R) in a consecutive 3-block window.
+- **If Pack #1 is NOT done historically**:
+  - **If Stage 2 finishes residency**: Pack #1 must be complete by end of Stage 2 (hard constraint: `total_micu == 1`, `total_rccm == 2`).
+  - **If Stage 2 does NOT finish residency**:
+    - **If `hist_micu == 0 AND hist_rccm == 0`** (starting Pack #1 from scratch):
+      - If consecutive 3-block windows exist in Stage 2: Hard constraint—if any MICU/RCCM assigned in Stage 2, it must be a complete Pack #1 in a consecutive window with valid pattern. Blocks outside the selected window have zero MICU/RCCM.
+      - If NO consecutive 3-block window exists in Stage 2: Hard constraint—forbid any MICU/RCCM assignment in Stage 2.
+    - **If `hist_micu > 0 OR hist_rccm > 0`** (partial Pack #1 historically): Hard constraint—must complete Pack #1 by end of Stage 2 (`total_micu == 1`, `total_rccm == 2`).
+- **If Pack #1 is done historically**:
+  - Stage 2 may **optionally** deliver Pack #2 (2M+1R) in a consecutive 3-block window with valid pattern.
+  - If Pack #2 is assigned, exactly one window is selected; blocks outside that window have zero MICU/RCCM.
 
 **Stage 3 (R3):**
-- **Mandatory**: Must deliver exactly the remaining blocks needed to reach 3 MICU + 3 RCCM total.
-- Remaining blocks must be assigned in a consecutive 3-block window (when total needed = 3).
-- If no valid consecutive window exists (e.g., due to Dec-Jan boundary preventing contiguity), the model will be infeasible.
+- **Mandatory**: Must deliver exactly the remaining MICU/RCCM blocks needed to reach 3M + 3R total.
+- Calculate `blocks_completed_after_current_year = completed_blocks + len(stage3_blocks) - leave_blocks_in_s3` (excluding leave blocks).
+- Calculate `remaining_career_blocks = 36 - blocks_completed_after_current_year`.
+
+- **If remaining career blocks are insufficient for the required blocks** (i.e., `remaining_career_blocks < total_needed`):
+  - **For N=3 blocks needed**: Enforce all 3 blocks in a consecutive 3-block window that does not cross Dec-Jan boundary. Exactly one window is selected; blocks outside have zero MICU/RCCM.
+  - **For N=2 blocks needed**: Enforce both blocks in consecutive adjacent blocks (e.g., blocks b and b+1) that do not cross Dec-Jan boundary. Exactly one pair is selected; blocks outside have zero MICU/RCCM.
+  - **For N=1 block needed**: All 1 block must be assigned in the current year (automatically satisfied since all Stage 3 blocks are in current year).
 
 **Skip Condition:**
 - If a resident already has 3 MICU + 3 RCCM historically, they are **forbidden** from any further MICU/RCCM assignments.
+
 
 #### HC14 — Balancing within halves and balancing deviation per posting 
 - Within blocks 1-6 and within blocks 7-12, the user can optionally input how much imbalance is allowed between the maximum and minimum number of residents assigned across 6 blocks. 
