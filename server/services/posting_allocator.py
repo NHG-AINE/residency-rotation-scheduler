@@ -523,9 +523,10 @@ def allocate_timetable(
         if medcomm_done_historically:
             model.Add(medcomm_flag[mcr] == 1)
         else:
-            medcomm_assigned = sum(
+            medcomm_assigned = model.NewIntVar(0, len(blocks), f"{mcr}_medcomm_assigned")
+            model.Add(medcomm_assigned == sum(
                 x[mcr]["MedComm (TTSH)"][b] for b in blocks
-            )
+            ))
 
             # medcomm_flag == 1  ⇔  at least one MedComm assigned
             model.Add(medcomm_assigned >= medcomm_flag[mcr])
@@ -546,12 +547,14 @@ def allocate_timetable(
         for base_posting, required_blocks in CORE_REQUIREMENTS.items():
             blocks_completed = core_blocks_completed_map.get(base_posting, 0)
 
-            assigned_blocks = sum(
+            assigned_blocks_var = model.NewIntVar(0, len(blocks) * len(posting_codes), f"{mcr}_{base_posting}_assigned")
+            model.Add(assigned_blocks_var == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.split(" (")[0] == base_posting
                 for b in blocks
-            )
+            ))
+            assigned_blocks = assigned_blocks_var
 
             # extended caps for GM if medcomm present
             if base_posting in HC5_GM:
@@ -798,9 +801,45 @@ def allocate_timetable(
             
     # Hard Constraint 13: enforce MICU/RCCM minimum requirements by career stage
     micu_rccm_pack_shortfall_flags: List[cp_model.BoolVar] = []
+    
+    # Helper function to enumerate all consecutive 3-block windows in a given stage
+    def get_consecutive_windows(stage_blocks: List[int]) -> List[Tuple[int, int, int]]:
+        """
+        Returns list of (start_block, mid_block, end_block) tuples for all consecutive 3-block windows.
+        Ensures blocks are strictly consecutive (no gaps).
+        Enforces Dec-Jan boundary: blocks 6 and 7 are NOT consecutive.
+        """
+        if len(stage_blocks) < 3:
+            return []
+        
+        windows = []
+        stage_blocks_sorted = sorted(stage_blocks)
+        for i in range(len(stage_blocks_sorted) - 2):
+            b1, b2, b3 = stage_blocks_sorted[i], stage_blocks_sorted[i+1], stage_blocks_sorted[i+2]
+            # Only valid if truly consecutive (no gaps)
+            if b2 == b1 + 1 and b3 == b2 + 1:
+                # Reject windows that span the Dec-Jan boundary (blocks 6→7)
+                window_set = {b1, b2, b3}
+                if 6 in window_set and 7 in window_set:
+                    continue  # Skip this window - crosses Dec-Jan boundary
+                windows.append((b1, b2, b3))
+        
+        return windows
+    
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
+        
+        # ===== CAREER PROGRESS VALIDATION =====
+        completed_blocks = resident.get("career_blocks_completed", 0)
+        current_stage = career_progress[mcr].get("stage")
+        stage1_finishes = bool(career_progress[mcr].get("stage1_finishes"))
+        stage2_finishes = bool(career_progress[mcr].get("stage2_finishes"))
+        stage3_finishes = bool(career_progress[mcr].get("stage3_finishes"))
+        
+        # Add to logging set for specific residents
+        is_logging_resident = mcr in ["M67295E", "M67138Z", "M68485F", "M68762F"]
+        
         stages_by_block = career_progress[mcr].get("stages_by_block", {})
         stage1_blocks = [b for b in blocks if stages_by_block.get(b) == 1]
         stage2_blocks = [b for b in blocks if stages_by_block.get(b) == 2]
@@ -810,66 +849,73 @@ def allocate_timetable(
         stage3_finishes = bool(career_progress[mcr].get("stage3_finishes"))
 
         # count assigned blocks for the current year
-        micu_stage1 = (
-            sum(
+        # count assigned blocks for the current year
+        # Create IntVar variables to hold the sums (so we can use them with OnlyEnforceIf)
+        micu_stage1 = model.NewIntVar(0, len(stage1_blocks or []), f"{mcr}_micu_s1_count")
+        if stage1_blocks:
+            model.Add(micu_stage1 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("MICU (")
                 for b in stage1_blocks
-            )
-            if stage1_blocks
-            else 0
-        )
-        micu_stage2 = (
-            sum(
+            ))
+        else:
+            model.Add(micu_stage1 == 0)
+        
+        micu_stage2 = model.NewIntVar(0, len(stage2_blocks or []), f"{mcr}_micu_s2_count")
+        if stage2_blocks:
+            model.Add(micu_stage2 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("MICU (")
                 for b in stage2_blocks
-            )
-            if stage2_blocks
-            else 0
-        )
-        micu_stage3 = (
-            sum(
+            ))
+        else:
+            model.Add(micu_stage2 == 0)
+        
+        micu_stage3 = model.NewIntVar(0, len(stage3_blocks or []), f"{mcr}_micu_s3_count")
+        if stage3_blocks:
+            model.Add(micu_stage3 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("MICU (")
                 for b in stage3_blocks
-            )
-            if stage3_blocks
-            else 0
-        )
-        rccm_stage1 = (
-            sum(
+            ))
+        else:
+            model.Add(micu_stage3 == 0)
+        
+        rccm_stage1 = model.NewIntVar(0, len(stage1_blocks or []), f"{mcr}_rccm_s1_count")
+        if stage1_blocks:
+            model.Add(rccm_stage1 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("RCCM (")
                 for b in stage1_blocks
-            )
-            if stage1_blocks
-            else 0
-        )
-        rccm_stage2 = (
-            sum(
+            ))
+        else:
+            model.Add(rccm_stage1 == 0)
+        
+        rccm_stage2 = model.NewIntVar(0, len(stage2_blocks or []), f"{mcr}_rccm_s2_count")
+        if stage2_blocks:
+            model.Add(rccm_stage2 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("RCCM (")
                 for b in stage2_blocks
-            )
-            if stage2_blocks
-            else 0
-        )
-        rccm_stage3 = (
-            sum(
+            ))
+        else:
+            model.Add(rccm_stage2 == 0)
+        
+        rccm_stage3 = model.NewIntVar(0, len(stage3_blocks or []), f"{mcr}_rccm_s3_count")
+        if stage3_blocks:
+            model.Add(rccm_stage3 == sum(
                 x[mcr][p][b]
                 for p in posting_codes
                 if p.startswith("RCCM (")
                 for b in stage3_blocks
-            )
-            if stage3_blocks
-            else 0
-        )
+            ))
+        else:
+            model.Add(rccm_stage3 == 0)
         micu_blocks = micu_stage1 + micu_stage2 + micu_stage3
         rccm_blocks = rccm_stage1 + rccm_stage2 + rccm_stage3
 
@@ -879,61 +925,133 @@ def allocate_timetable(
         )
         hist_micu = core_blocks_completed_map.get("MICU", 0)
         hist_rccm = core_blocks_completed_map.get("RCCM", 0)
+        
+        # Log historical counts for specific residents
+        if is_logging_resident:
+            logger.info(
+                f"HC13 Historical counts for {mcr}: "
+                f"hist_micu={hist_micu}, hist_rccm={hist_rccm}"
+            )
 
+        # ===== HC13 VALIDATION =====
+        # Validation: Check for impossible states and log warnings
+        total_hist = hist_micu + hist_rccm
+        
+        if total_hist > 6:
+            logger.warning(
+                f"HC13 VALIDATION: {mcr} has {total_hist} total MICU+RCCM blocks historically (>6). "
+                f"This exceeds the 3+3 requirement. Actual: {hist_micu} MICU + {hist_rccm} RCCM."
+            )
+        
+        if hist_micu > 3 or hist_rccm > 3:
+            logger.warning(
+                f"HC13 VALIDATION: {mcr} already exceeds individual caps: "
+                f"{hist_micu}/3 MICU, {hist_rccm}/3 RCCM. "
+                f"This resident should not be assigned any more MICU/RCCM blocks."
+            )
+
+        # Skip HC13 entirely if resident already has 3 MICU + 3 RCCM
         if hist_micu == 3 and hist_rccm == 3:
+            # Forbid any further MICU/RCCM assignments for this resident
+            micu_rccm = [
+                p for p in posting_codes if p.startswith("MICU (") or p.startswith("RCCM (")
+            ]
+            for p in micu_rccm:
+                for b in blocks:
+                    model.Add(x[mcr][p][b] == 0)
             continue
 
+        # Determine pack states
+        pack1_done_hist = (hist_micu == 1) and (hist_rccm == 2)
+        pack2_done_hist = (hist_micu == 3) and (hist_rccm == 3)  # both packs complete
+        
+        # Stage 1 may optionally deliver pack #1 (1 MICU, 2 RCCM)
         if 1 in stages_present and stage1_blocks:
-            # by end of 12 months: optionally do first pack (MICU=1 and RCCM=2)
-            flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
-            model.Add(micu_stage1 == 1).OnlyEnforceIf(flag)
-            model.Add(rccm_stage1 == 2).OnlyEnforceIf(flag)
-            model.Add(micu_stage1 == 0).OnlyEnforceIf(flag.Not())
-            model.Add(rccm_stage1 == 0).OnlyEnforceIf(flag.Not())
+            flag_s1 = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s1")
+            model.Add(micu_stage1 == 1).OnlyEnforceIf(flag_s1)
+            model.Add(rccm_stage1 == 2).OnlyEnforceIf(flag_s1)
+            model.Add(micu_stage1 == 0).OnlyEnforceIf(flag_s1.Not())
+            model.Add(rccm_stage1 == 0).OnlyEnforceIf(flag_s1.Not())
+            
+            # HC13 Note: Pack contiguity is already enforced by HC7b (global MICU/RCCM contiguity).
+            # The pack requirements (1M+2R for Stage 1 Pack #1) are enforced above by exact count constraints.
+            # No additional pattern matching constraints needed.
+
         if 2 in stages_present:
-            # optionally do second pack (MICU=2, RCCM=1) if first pack done
-            # else do first pack if first pack not done
-            first_pack_done = (hist_micu == 1) and (hist_rccm == 2)
-            if not first_pack_done:
+            if not pack1_done_hist:
+                # Pack #1 not done historically: stage 1+2 together must complete pack #1
+                # TOTAL (history + stages 1+2) must equal pack #1 counts
+                total_micu_through_s2 = hist_micu + micu_stage1 + micu_stage2
+                total_rccm_through_s2 = hist_rccm + rccm_stage1 + rccm_stage2
+
                 if stage2_finishes:
-                    model.Add(micu_stage1 + micu_stage2 == 1)
-                    model.Add(rccm_stage1 + rccm_stage2 == 2)
+                    # Stage 2 ends residency: pack #1 MUST be complete by end of stage 2
+                    model.Add(total_micu_through_s2 == 1)
+                    model.Add(total_rccm_through_s2 == 2)
                 else:
-                    micu_pack1_shortfall = model.NewBoolVar(
-                        f"{mcr}_micu_pack1_shortfall"
-                    )
-                    rccm_pack1_shortfall = model.NewBoolVar(
-                        f"{mcr}_rccm_pack1_shortfall"
-                    )
-
-                    model.Add(micu_stage1 + micu_stage2 >= 1).OnlyEnforceIf(
-                        micu_pack1_shortfall.Not()
-                    )
-                    model.Add(micu_stage1 + micu_stage2 <= 0).OnlyEnforceIf(
-                        micu_pack1_shortfall
-                    )
-
-                    model.Add(rccm_stage1 + rccm_stage2 >= 2).OnlyEnforceIf(
-                        rccm_pack1_shortfall.Not()
-                    )
-                    model.Add(rccm_stage1 + rccm_stage2 <= 1).OnlyEnforceIf(
-                        rccm_pack1_shortfall
-                    )
-
-                    micu_rccm_pack_shortfall_flags.append(micu_pack1_shortfall)
-                    micu_rccm_pack_shortfall_flags.append(rccm_pack1_shortfall)
+                    # Stage 2 does not end: ensure pack #1 is completed by end of stage 2
+                    # HC13 Note: Contiguity is handled by HC7b. Just enforce exact counts.
+                    model.Add(total_micu_through_s2 == 1)
+                    model.Add(total_rccm_through_s2 == 2)
             elif stage2_blocks:
-                flag = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s2")
-                model.Add(micu_stage2 == 2).OnlyEnforceIf(flag)
-                model.Add(rccm_stage2 == 1).OnlyEnforceIf(flag)
-                model.Add(micu_stage2 == 0).OnlyEnforceIf(flag.Not())
-                model.Add(rccm_stage2 == 0).OnlyEnforceIf(flag.Not())
-        if 3 in stages_present and stage3_finishes:
-            micu_needed = max(0, 3 - hist_micu)
-            rccm_needed = max(0, 3 - hist_rccm)
+                # Pack #1 already done historically: stage 2 may optionally deliver pack #2 (2 MICU, 1 RCCM)
+                # Pack #2 is delivered ONLY in stage 2 (since pack #1 is historical)
+                flag_s2 = model.NewBoolVar(f"{mcr}_do_micu_rccm_pack_s2")
+                model.Add(micu_stage2 == 2).OnlyEnforceIf(flag_s2)
+                model.Add(rccm_stage2 == 1).OnlyEnforceIf(flag_s2)
+                model.Add(micu_stage2 == 0).OnlyEnforceIf(flag_s2.Not())
+                model.Add(rccm_stage2 == 0).OnlyEnforceIf(flag_s2.Not())
+                
+            # HC13 Note: Pack #2 contiguity is already enforced by HC7b (global MICU/RCCM contiguity).
+            # Just enforce the exact counts (2M + 1R). No additional pattern matching needed.
 
-            model.Add(micu_blocks == micu_needed)
-            model.Add(rccm_blocks == rccm_needed)
+
+        # ===== HC13 STAGE 2 VALIDATION =====
+        # Check if pack #1 requirements are feasible by end of stage 2
+        if 2 in stages_present and not pack1_done_hist:
+            total_micu_through_s2 = hist_micu + micu_stage1 + micu_stage2
+            total_rccm_through_s2 = hist_rccm + rccm_stage1 + rccm_stage2
+            
+            # Warn if it's already impossible to reach pack #1 by end of stage 2
+            if hist_micu > 1 or hist_rccm > 2:
+                logger.warning(
+                    f"HC13 STAGE 2 INFEASIBILITY: {mcr} cannot complete pack #1 by stage 2. "
+                    f"Pack #1 requires 1M+2R total, but history already has {hist_micu}M+{hist_rccm}R. "
+                    f"This resident will violate HC13 constraints."
+                )
+
+        # Stage 3 assigns exactly the remaining MICU/RCCM blocks needed to reach 3 each
+        if 3 in stages_present:
+            # Calculate what has been delivered so far (history + this year in stages 1 & 2)
+            micu_delivered_before_s3 = hist_micu + micu_stage1 + micu_stage2
+            rccm_delivered_before_s3 = hist_rccm + rccm_stage1 + rccm_stage2
+
+            micu_needed_s3 = model.NewIntVar(0, 3, f"{mcr}_micu_needed_s3")
+            model.AddMaxEquality(micu_needed_s3, [0, 3 - micu_delivered_before_s3])
+            rccm_needed_s3 = model.NewIntVar(0, 3, f"{mcr}_rccm_needed_s3")
+            model.AddMaxEquality(rccm_needed_s3, [0, 3 - rccm_delivered_before_s3])
+            total_needed_s3 = micu_needed_s3 + rccm_needed_s3
+            
+            if is_logging_resident:
+                logger.info(
+                    f"HC13 {mcr} Stage 3: micu_needed={micu_needed_s3}, rccm_needed={rccm_needed_s3}, total_needed={total_needed_s3}"
+                )
+            
+            # ALWAYS enforce exact counts for Stage 3 to reach 3M + 3R total, regardless of stage3_finishes
+            # This ensures residents don't exceed their required blocks even if they don't finish Stage 3 this year
+            model.Add(micu_stage3 == micu_needed_s3)
+            model.Add(rccm_stage3 == rccm_needed_s3)
+            
+            # If resident finishes Stage 3 THIS YEAR, contiguity is already enforced by HC7b
+            # No additional pattern matching constraints needed beyond the exact count requirements above
+            if is_logging_resident:
+                logger.info(
+                    f"HC13 {mcr} Stage 3 (finishing): Exact counts enforced (micu={micu_needed_s3}, rccm={rccm_needed_s3})"
+                )
+
+        # HC13 Note: Pack contiguity is already enforced by HC7b (global MICU/RCCM contiguity).
+        # The pack requirements above only control the MIX of MICU vs RCCM per stage.
+        # No additional contiguity constraints needed here.
 
     # Hard Constraint 14: ensure postings are not imbalanced within each half of the year
     for p in posting_codes:
@@ -1039,7 +1157,15 @@ def allocate_timetable(
         stage2_finishes = bool(career_progress[mcr].get("stage2_finishes"))
 
         # current-year elective selections count
-        selection_count = sum(selection_flags[mcr][p] for p in ELECTIVE_POSTINGS)
+        selection_count_var = model.NewIntVar(
+            0, len(ELECTIVE_POSTINGS), f"{mcr}_selection_count"
+        )
+        model.Add(
+            selection_count_var == sum(
+                selection_flags[mcr][p] for p in ELECTIVE_POSTINGS
+            )
+        )
+        selection_count = selection_count_var
 
         if 2 in stages_present:
             resident_prefs = pref_map.get(mcr, {})
@@ -1052,7 +1178,11 @@ def allocate_timetable(
                 posting_progress.get(mcr, {}), posting_info
             )
             s1_hist_count = len(s1_hist_electives)
-            total_s1_s2 = s1_hist_count + selection_count
+            total_s1_s2_var = model.NewIntVar(
+                0, 2 * len(ELECTIVE_POSTINGS), f"{mcr}_total_s1_s2"
+            )
+            model.Add(total_s1_s2_var == s1_hist_count + selection_count)
+            total_s1_s2 = total_s1_s2_var
 
             if s1_hist_count < 1:
                 if stage2_finishes:
@@ -1066,12 +1196,14 @@ def allocate_timetable(
             if has_prefs:
                 # grant a bonus for more than 1 accumulated electives only if preference given
                 flag = model.NewBoolVar(f"{mcr}_s2_elective_second_bonus")
-                model.Add(selection_count + len(s1_hist_electives) >= 2).OnlyEnforceIf(
-                    flag
+                s2_elective_total = model.NewIntVar(
+                    0, 2 * len(ELECTIVE_POSTINGS), f"{mcr}_s2_elective_total"
                 )
-                model.Add(selection_count + len(s1_hist_electives) <= 1).OnlyEnforceIf(
-                    flag.Not()
+                model.Add(
+                    s2_elective_total == selection_count + len(s1_hist_electives)
                 )
+                model.Add(s2_elective_total >= 2).OnlyEnforceIf(flag)
+                model.Add(s2_elective_total <= 1).OnlyEnforceIf(flag.Not())
                 s2_elective_bonus_terms.append(s2_elective_bonus_weight * flag)
 
         if 3 in stages_present and stage3_finishes:
@@ -1084,8 +1216,12 @@ def allocate_timetable(
                 unmet = model.NewBoolVar(f"{mcr}_elective_req_unmet")
                 elective_shortfall_penalty_flags[mcr] = unmet
 
-                model.Add(hist_count + selection_count == 5).OnlyEnforceIf(unmet.Not())
-                model.Add(hist_count + selection_count <= 4).OnlyEnforceIf(unmet)
+                s3_elective_total = model.NewIntVar(
+                    0, 2 * len(ELECTIVE_POSTINGS), f"{mcr}_s3_elective_total"
+                )
+                model.Add(s3_elective_total == hist_count + selection_count)
+                model.Add(s3_elective_total == 5).OnlyEnforceIf(unmet.Not())
+                model.Add(s3_elective_total <= 4).OnlyEnforceIf(unmet)
 
     # Soft Constraint 2: Shortfall on core requirements
     # this will encourage solver to eventually meet core requirements where possible
@@ -1150,9 +1286,26 @@ def allocate_timetable(
         if not offered:
             continue
 
-        ccr_stage2_blocks = sum(x[mcr][p][b] for p in offered for b in stage2_blocks)
-        ccr_outside_stage2 = sum(
-            x[mcr][p][b] for p in offered for b in blocks if b not in stage2_blocks
+        ccr_stage2_blocks = model.NewIntVar(
+            0, len(offered) * len(stage2_blocks), f"{mcr}_ccr_stage2_blocks"
+        )
+        model.Add(
+            ccr_stage2_blocks == sum(
+                x[mcr][p][b] for p in offered for b in stage2_blocks
+            )
+        )
+        ccr_outside_stage2 = model.NewIntVar(
+            0,
+            len(offered) * (len(blocks) - len(stage2_blocks)),
+            f"{mcr}_ccr_outside_stage2",
+        )
+        model.Add(
+            ccr_outside_stage2 == sum(
+                x[mcr][p][b]
+                for p in offered
+                for b in blocks
+                if b not in stage2_blocks
+            )
         )
 
         flag = model.NewBoolVar(f"{mcr}_ccr_stage2_bonus")
@@ -1456,20 +1609,20 @@ def allocate_timetable(
         flag = model.NewBoolVar(f"{mcr}_ed_grm_pair_bonus")
 
         hasED = model.NewBoolVar(f"{mcr}_hasED_pair_bonus")
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) >= 1).OnlyEnforceIf(
-            hasED
+        ed_pair_count = model.NewIntVar(0, len(ED_codes), f"{mcr}_ed_pair_count")
+        model.Add(
+            ed_pair_count == sum(selection_flags[mcr][p] for p in ED_codes)
         )
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) == 0).OnlyEnforceIf(
-            hasED.Not()
-        )
+        model.Add(ed_pair_count >= 1).OnlyEnforceIf(hasED)
+        model.Add(ed_pair_count == 0).OnlyEnforceIf(hasED.Not())
 
         hasGRM = model.NewBoolVar(f"{mcr}_hasGRM_pair_bonus")
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) >= 1).OnlyEnforceIf(
-            hasGRM
+        grm_pair_count = model.NewIntVar(0, len(GRM_codes), f"{mcr}_grm_pair_count")
+        model.Add(
+            grm_pair_count == sum(selection_flags[mcr][p] for p in GRM_codes)
         )
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) == 0).OnlyEnforceIf(
-            hasGRM.Not()
-        )
+        model.Add(grm_pair_count >= 1).OnlyEnforceIf(hasGRM)
+        model.Add(grm_pair_count == 0).OnlyEnforceIf(hasGRM.Not())
 
         model.Add(flag == 1).OnlyEnforceIf([hasED, hasGRM])
         model.Add(flag == 0).OnlyEnforceIf(hasED.Not())
@@ -1487,24 +1640,23 @@ def allocate_timetable(
 
         # detect ED presence
         hasED = model.NewBoolVar(f"{mcr}_hasED")
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) >= 1).OnlyEnforceIf(
-            hasED
-        )
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) == 0).OnlyEnforceIf(
-            hasED.Not()
-        )
+        ed_count = model.NewIntVar(0, len(ED_codes), f"{mcr}_ed_count")
+        model.Add(ed_count == sum(selection_flags[mcr][p] for p in ED_codes))
+        model.Add(ed_count >= 1).OnlyEnforceIf(hasED)
+        model.Add(ed_count == 0).OnlyEnforceIf(hasED.Not())
 
         # detect GRM presence
         hasGRM = model.NewBoolVar(f"{mcr}_hasGRM")
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) >= 1).OnlyEnforceIf(
-            hasGRM
-        )
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) == 0).OnlyEnforceIf(
-            hasGRM.Not()
-        )
+        grm_count = model.NewIntVar(0, len(GRM_codes), f"{mcr}_grm_count")
+        model.Add(grm_count == sum(selection_flags[mcr][p] for p in GRM_codes))
+        model.Add(grm_count >= 1).OnlyEnforceIf(hasGRM)
+        model.Add(grm_count == 0).OnlyEnforceIf(hasGRM.Not())
 
         # count total GM blocks
-        total_gm = sum(x[mcr][p][b] for p in GM_codes for b in blocks)
+        total_gm = model.NewIntVar(
+            0, len(GM_codes) * len(blocks), f"{mcr}_total_gm"
+        )
+        model.Add(total_gm == sum(x[mcr][p][b] for p in GM_codes for b in blocks))
 
         # If they lack ED or GRM, they can never get the bonus
         model.Add(flag == 0).OnlyEnforceIf(hasED.Not())
@@ -1525,37 +1677,56 @@ def allocate_timetable(
 
         # detect ED presence
         hasED = model.NewBoolVar(f"{mcr}_hasED_early_bundle")
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) >= 1).OnlyEnforceIf(
-            hasED
+        early_ed_count = model.NewIntVar(0, len(ED_codes), f"{mcr}_early_ed_count")
+        model.Add(
+            early_ed_count == sum(selection_flags[mcr][p] for p in ED_codes)
         )
-        model.Add(sum(selection_flags[mcr][p] for p in ED_codes) == 0).OnlyEnforceIf(
-            hasED.Not()
-        )
+        model.Add(early_ed_count >= 1).OnlyEnforceIf(hasED)
+        model.Add(early_ed_count == 0).OnlyEnforceIf(hasED.Not())
 
         # detect GRM presence
         hasGRM = model.NewBoolVar(f"{mcr}_hasGRM_early_bundle")
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) >= 1).OnlyEnforceIf(
-            hasGRM
+        early_grm_count = model.NewIntVar(0, len(GRM_codes), f"{mcr}_early_grm_count")
+        model.Add(
+            early_grm_count == sum(selection_flags[mcr][p] for p in GRM_codes)
         )
-        model.Add(sum(selection_flags[mcr][p] for p in GRM_codes) == 0).OnlyEnforceIf(
-            hasGRM.Not()
-        )
+        model.Add(early_grm_count >= 1).OnlyEnforceIf(hasGRM)
+        model.Add(early_grm_count == 0).OnlyEnforceIf(hasGRM.Not())
 
         # detect GM presence
         hasGM = model.NewBoolVar(f"{mcr}_hasGM_early_bundle")
-        model.Add(sum(selection_flags[mcr][p] for p in GM_codes) >= 1).OnlyEnforceIf(
-            hasGM
+        early_gm_count = model.NewIntVar(0, len(GM_codes), f"{mcr}_early_gm_count")
+        model.Add(
+            early_gm_count == sum(selection_flags[mcr][p] for p in GM_codes)
         )
-        model.Add(sum(selection_flags[mcr][p] for p in GM_codes) == 0).OnlyEnforceIf(
-            hasGM.Not()
-        )
+        model.Add(early_gm_count >= 1).OnlyEnforceIf(hasGM)
+        model.Add(early_gm_count == 0).OnlyEnforceIf(hasGM.Not())
 
         # check if bundle spans both halves of the year (crosses Dec-Jan boundary)
-        pre_blocks = sum(
-            x[mcr][p][b] for p in ED_codes + GRM_codes + GM_codes for b in early_blocks
+        bundle_posting_count = len(ED_codes) + len(GRM_codes) + len(GM_codes)
+        pre_blocks = model.NewIntVar(
+            0,
+            bundle_posting_count * len(early_blocks),
+            f"{mcr}_bundle_pre_blocks",
         )
-        post_blocks = sum(
-            x[mcr][p][b] for p in ED_codes + GRM_codes + GM_codes for b in late_blocks
+        model.Add(
+            pre_blocks == sum(
+                x[mcr][p][b]
+                for p in ED_codes + GRM_codes + GM_codes
+                for b in early_blocks
+            )
+        )
+        post_blocks = model.NewIntVar(
+            0,
+            bundle_posting_count * len(late_blocks),
+            f"{mcr}_bundle_post_blocks",
+        )
+        model.Add(
+            post_blocks == sum(
+                x[mcr][p][b]
+                for p in ED_codes + GRM_codes + GM_codes
+                for b in late_blocks
+            )
         )
 
         pre_positive = model.NewBoolVar(f"{mcr}_bundle_pre_half")
