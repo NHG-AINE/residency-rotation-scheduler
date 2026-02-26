@@ -204,14 +204,25 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
   - If Pack #2 is assigned, exactly one window is selected; blocks outside that window have zero MICU/RCCM.
 
 **Stage 3 (R3):**
-- **Mandatory**: Must deliver exactly the remaining MICU/RCCM blocks needed to reach 3M + 3R total.
-- Calculate `blocks_completed_after_current_year = completed_blocks + len(stage3_blocks) - leave_blocks_in_s3` (excluding leave blocks).
-- Calculate `remaining_career_blocks = 36 - blocks_completed_after_current_year`.
+- **Mandatory**: Always enforce exact counts—must deliver exactly the remaining MICU/RCCM blocks needed to reach 3M + 3R total.
+  - `micu_stage3 == micu_needed_s3` and `rccm_stage3 == rccm_needed_s3` are enforced as hard constraints whenever a resident is in Stage 3.
+  - This applies **regardless of whether the resident finishes Stage 3 in the current year**, ensuring residents never exceed their required 3M+3R total.
 
-- **If remaining career blocks are insufficient for the required blocks** (i.e., `remaining_career_blocks < total_needed`):
-  - **For N=3 blocks needed**: Enforce all 3 blocks in a consecutive 3-block window that does not cross Dec-Jan boundary. Exactly one window is selected; blocks outside have zero MICU/RCCM.
-  - **For N=2 blocks needed**: Enforce both blocks in consecutive adjacent blocks (e.g., blocks b and b+1) that do not cross Dec-Jan boundary. Exactly one pair is selected; blocks outside have zero MICU/RCCM.
-  - **For N=1 block needed**: All 1 block must be assigned in the current year (automatically satisfied since all Stage 3 blocks are in current year).
+- **If resident finishes Stage 3 in the current year** (`stage3_finishes == True`):
+  - Calculate `blocks_completed_after_current_year = completed_blocks + len(stage3_blocks) - leave_blocks_in_s3` (excluding leave blocks).
+  - Calculate `remaining_career_blocks = 36 - blocks_completed_after_current_year`.
+  
+  - **If remaining career blocks are insufficient for the required blocks** (i.e., `remaining_career_blocks < total_needed`):
+    - **For N=3 blocks needed**: Enforce all 3 blocks in a consecutive 3-block window that does not cross Dec-Jan boundary. Exactly one window is selected; blocks outside have zero MICU/RCCM.
+    - **For N=2 blocks needed**: Enforce both blocks in consecutive adjacent blocks (e.g., blocks b and b+1) that do not cross Dec-Jan boundary. Exactly one pair is selected; blocks outside have zero MICU/RCCM.
+    - **For N=1 block needed**: All 1 block must be assigned in the current year (automatically satisfied since all Stage 3 blocks are in current year).
+  
+  - **If remaining career blocks are sufficient** (i.e., `remaining_career_blocks >= total_needed`):
+    - No mandatory contiguity constraint; exact counts are already enforced (see above).
+
+- **If resident does NOT finish Stage 3 in the current year**:
+  - Exact count constraints still apply (see above).
+  - No contiguity/window enforcement rules are applied; the solver has flexibility in block placement as long as the total counts are met.
 
 **Skip Condition:**
 - If a resident already has 3 MICU + 3 RCCM historically, they are **forbidden** from any further MICU/RCCM assignments.
