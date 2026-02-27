@@ -649,9 +649,18 @@ def allocate_timetable(
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
+        # Use all-time progress to detect electives completed including current year assignments
+        all_time_resident_progress = all_time_posting_progress.get(mcr, {})
+        
+        # Collect pinned postings for this resident to avoid forbidding them
+        pinned_postings_for_resident = set()
+        if pinned_assignments and mcr in pinned_assignments:
+            for entry in pinned_assignments[mcr]:
+                pinned_postings_for_resident.add(entry.get("posting_code"))
+        
         base_electives_done = {
             p.split(" (")[0]
-            for p in get_unique_electives_completed(resident_progress, posting_info)
+            for p in get_unique_electives_completed(all_time_resident_progress, posting_info)
         }
 
         for base_elective in ELECTIVE_BASE_CODES:
@@ -666,13 +675,41 @@ def allocate_timetable(
             if not all_variants:
                 continue
 
+            # Get required_block_duration from the first variant (same for all variants of same base)
+            required_duration = posting_info[all_variants[0]]["required_block_duration"]
+
             if base_elective in base_electives_done:
-                # forbid any runs of this base
-                for p in all_variants:
-                    model.Add(posting_asgm_count[mcr][p] == 0)
+                # Check if any variant has pinned assignments (being completed this year)
+                has_pinned_variant = any(p in pinned_postings_for_resident for p in all_variants)
+                
+                if has_pinned_variant:
+                    # Don't forbid variants with pinned assignments, but forbid others
+                    for p in all_variants:
+                        if p not in pinned_postings_for_resident:
+                            # Forbid variants without pinned assignments
+                            for b in blocks:
+                                model.Add(x[mcr][p][b] == 0)
+                else:
+                    # No pinned assignments, so forbid all variants
+                    for p in all_variants:
+                        model.Add(posting_asgm_count[mcr][p] == 0)
+                        # Explicitly forbid block assignments
+                        for b in blocks:
+                            model.Add(x[mcr][p][b] == 0)
             else:
-                # allow at most one run across all variants
-                model.Add(sum(posting_asgm_count[mcr][p] for p in all_variants) <= 1)
+                # Elective not yet completed historically
+                # Limit total blocks assigned across all variants to required_duration
+                total_blocks_var = model.NewIntVar(0, len(blocks), f"{mcr}_{base_elective}_total_blocks")
+                model.Add(total_blocks_var == sum(
+                    x[mcr][p][b]
+                    for p in all_variants
+                    for b in blocks
+                ))
+                model.Add(total_blocks_var <= required_duration)
+                
+                # Ensure only one variant of this base can be selected
+                elective_selection_flags = [selection_flags[mcr][p] for p in all_variants]
+                model.Add(sum(elective_selection_flags) <= 1)
 
     # Hard Constraint 7a: if both MICU and RCCM are assigned, they must be from the same institution
     for resident in residents:
