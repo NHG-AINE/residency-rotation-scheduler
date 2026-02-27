@@ -30,6 +30,7 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
     residents = payload.get("residents") or []
     resident_history = payload.get("resident_history") or []
     postings = payload.get("postings") or []
+    resident_preferences = payload.get("resident_preferences") or []
 
     warnings: List[Dict[str, str]] = []
 
@@ -216,6 +217,28 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
                     add_warning(
                         "HC6",
                         f"Elective '{base}' already assigned before; cannot repeat",
+                    )
+
+        # HC16: electives must be in resident's elective preference list
+        pref_map: Dict[str, set] = {}
+        for pref in resident_preferences:
+            pref_mcr = pref.get("mcr")
+            pref_posting = pref.get("posting_code")
+            if pref_mcr and pref_posting:
+                if pref_mcr not in pref_map:
+                    pref_map[pref_mcr] = set()
+                pref_map[pref_mcr].add(pref_posting)
+        
+        for _, info in by_block.items():
+            code = info["posting_code"]
+            if info["is_leave"]:
+                continue
+            if posting_info.get(code, {}).get("posting_type") == "elective":
+                resident_prefs = pref_map.get(mcr, set())
+                if code not in resident_prefs:
+                    add_warning(
+                        "HC16",
+                        f"Elective '{code}' is not in the resident's elective preference list",
                     )
 
         # HC4: CCR permitted exactly once (unless already completed or Y1)

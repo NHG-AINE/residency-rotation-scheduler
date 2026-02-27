@@ -152,6 +152,7 @@ async def save(payload: Dict[str, Any] = Body(...)):
         "residents": store_snapshot.get("residents") or [],
         "resident_history": store_snapshot.get("resident_history") or [],
         "postings": store_snapshot.get("postings") or [],
+        "resident_preferences": store_snapshot.get("resident_preferences") or [],
     }
 
     validation_result = validate_assignment(validation_payload)

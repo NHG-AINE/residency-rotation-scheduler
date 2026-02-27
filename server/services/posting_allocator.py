@@ -100,6 +100,15 @@ def allocate_timetable(
                 "Ignoring invalid pinned assignment (%s, %s, %s)", mcr, posting, block
             )
             return
+        # HC16: Validate that elective postings are in resident's preferences
+        if posting_info[posting].get("posting_type") == "elective":
+            resident_pref_postings = set(pref_map.get(mcr, {}).values())
+            if posting not in resident_pref_postings:
+                logger.warning(
+                    "Ignoring pinned assignment for %s on elective %s (not in resident's elective preferences)",
+                    mcr, posting
+                )
+                return
         pins_by_resident.setdefault(mcr, {})[block] = posting
 
     # a. add explicitly defined pinned assignments from user
