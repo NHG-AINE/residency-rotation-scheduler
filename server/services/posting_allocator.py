@@ -109,6 +109,12 @@ def allocate_timetable(
             posting_code = entry.get("posting_code")
             _record_pin(mcr, block, posting_code)
 
+    # Save the original resident_history before filtering for CCR historical completion checks
+    original_resident_history = resident_history or []
+    
+    # Calculate all-time posting progress EARLY to detect completed CCR postings
+    all_time_posting_progress = get_posting_progress(original_resident_history, posting_info)
+
     # b. process current-year resident history rows (pin postings, capture leaves)
     filtered_resident_history: List[Dict] = []
     for row in resident_history or []:
@@ -133,8 +139,15 @@ def allocate_timetable(
                 )
 
         # if not leave entry and marked as current year in resident history, record as pinned assignment
+        # UNLESS it's a CCR posting that's already been completed
         elif is_current_year and not is_leave:
-            _record_pin(mcr, month_block, posting_code)
+            # Check if this is a completed CCR posting
+            is_completed_ccr = posting_code in CCR_POSTINGS and all_time_posting_progress.get(mcr, {}).get(posting_code, {}).get("is_completed", False)
+            
+            if not is_completed_ccr:
+                _record_pin(mcr, month_block, posting_code)
+            else:
+                logger.info(f"Skipping pin for {mcr} {posting_code} (already completed CCR)")
 
         # else, retain in filtered resident history
         else:
@@ -158,6 +171,8 @@ def allocate_timetable(
     resident_leaves = (resident_leaves or []) + derived_leave_rows
 
     # 7. get posting progress for each resident
+    # posting_progress: filtered history (excludes current-year entries used as pinned assignments)
+    # all_time_posting_progress: already calculated early (line ~113) to detect CCR completion during pinning
     posting_progress = get_posting_progress(resident_history, posting_info)
 
     # 8. create lists of ED, GRM, GM postings
@@ -443,15 +458,21 @@ def allocate_timetable(
     for resident in residents:
         mcr = resident["mcr"]
         resident_progress = posting_progress.get(mcr, {})
+        # For CCR completion checks, use all-time progress to detect if any CCR was completed historically
+        # This includes current-year postings that were marked as pinned assignments
+        all_time_resident_progress = all_time_posting_progress.get(mcr, {})
         stages_by_block = career_progress[mcr].get("stages_by_block", {})
         stage1_blocks = [b for b in blocks if stages_by_block.get(b) == 1]
         stage2_blocks = [b for b in blocks if stages_by_block.get(b) == 2]
         stage3_blocks = [b for b in blocks if stages_by_block.get(b) == 3]
 
-        done_ccr = any(
-            resident_progress.get(ccr_posting, {}).get("is_completed", False)
+        # Detect which CCR postings have been completed historically
+        completed_ccr_postings = [
+            ccr_posting
             for ccr_posting in CCR_POSTINGS
-        )
+            if all_time_resident_progress.get(ccr_posting, {}).get("is_completed", False)
+        ]
+        done_ccr = len(completed_ccr_postings) > 0
 
         # extra protective layer of code to ensure user updates both posting codes and ccr posting codes
         offered = [p for p in CCR_POSTINGS if p in posting_codes]
@@ -467,10 +488,12 @@ def allocate_timetable(
 
         ccr_runs = sum(posting_asgm_count[mcr][p] for p in offered)
 
-        # CCR forbidden is already done
+        # CCR forbidden if already done
         if done_ccr:
+            # Directly forbid all block assignments for CCR postings
             for p in offered:
-                model.Add(posting_asgm_count[mcr][p] == 0)
+                for b in blocks:
+                    model.Add(x[mcr][p][b] == 0)
 
         # if stage 3 blocks are present (resident could possibly have stage 2 blocks too)
         elif stage3_blocks:
@@ -926,12 +949,6 @@ def allocate_timetable(
         hist_micu = core_blocks_completed_map.get("MICU", 0)
         hist_rccm = core_blocks_completed_map.get("RCCM", 0)
         
-        # Log historical counts for specific residents
-        if is_logging_resident:
-            logger.info(
-                f"HC13 Historical counts for {mcr}: "
-                f"hist_micu={hist_micu}, hist_rccm={hist_rccm}"
-            )
 
         # ===== HC13 VALIDATION =====
         # Validation: Check for impossible states and log warnings
@@ -1032,22 +1049,10 @@ def allocate_timetable(
             model.AddMaxEquality(rccm_needed_s3, [0, 3 - rccm_delivered_before_s3])
             total_needed_s3 = micu_needed_s3 + rccm_needed_s3
             
-            if is_logging_resident:
-                logger.info(
-                    f"HC13 {mcr} Stage 3: micu_needed={micu_needed_s3}, rccm_needed={rccm_needed_s3}, total_needed={total_needed_s3}"
-                )
-            
             # ALWAYS enforce exact counts for Stage 3 to reach 3M + 3R total, regardless of stage3_finishes
             # This ensures residents don't exceed their required blocks even if they don't finish Stage 3 this year
             model.Add(micu_stage3 == micu_needed_s3)
             model.Add(rccm_stage3 == rccm_needed_s3)
-            
-            # If resident finishes Stage 3 THIS YEAR, contiguity is already enforced by HC7b
-            # No additional pattern matching constraints needed beyond the exact count requirements above
-            if is_logging_resident:
-                logger.info(
-                    f"HC13 {mcr} Stage 3 (finishing): Exact counts enforced (micu={micu_needed_s3}, rccm={rccm_needed_s3})"
-                )
 
         # HC13 Note: Pack contiguity is already enforced by HC7b (global MICU/RCCM contiguity).
         # The pack requirements above only control the MIX of MICU vs RCCM per stage.
