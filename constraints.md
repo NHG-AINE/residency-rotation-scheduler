@@ -112,11 +112,13 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 
 - CCR is forbidden (0 CCR this year):
   - in stage 1
-  - if CCR already done
+  - if any CCR has already been completed historically
   - if no stage ≥2 blocks exist
-- Otherwise:
+- Otherwise (when stage 2 or 3 blocks exist and CCR not yet done):
+  - **Only one type of CCR posting** can be selected, but not both.
   - Exactly one run when stage 3 blocks exist.
   - At most one run when only stage 2 blocks exist.
+- **Block count**: The number of blocks assigned equals the posting's `required_block_duration` (enforced by HC3).
 
 #### HC5 — Core caps (per resident)
 
