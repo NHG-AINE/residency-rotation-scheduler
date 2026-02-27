@@ -487,6 +487,7 @@ def allocate_timetable(
                     model.Add(x[mcr][p][b] == 0)
 
         ccr_runs = sum(posting_asgm_count[mcr][p] for p in offered)
+        ccr_selection_flags = [selection_flags[mcr][p] for p in offered]
 
         # CCR forbidden if already done
         if done_ccr:
@@ -494,14 +495,22 @@ def allocate_timetable(
             for p in offered:
                 for b in blocks:
                     model.Add(x[mcr][p][b] == 0)
+            # Also ensure no CCR type is selected
+            model.Add(sum(ccr_selection_flags) == 0)
 
         # if stage 3 blocks are present (resident could possibly have stage 2 blocks too)
         elif stage3_blocks:
             model.Add(ccr_runs == 1)
+            # Enforce that exactly one type of CCR is selected (mandatory: 1 run requires 1 type)
+            model.Add(sum(ccr_selection_flags) == 1)
         elif stage2_blocks:  # only stage 2 blocks exist
             model.Add(ccr_runs <= 1)
+            # Enforce that only one type of CCR is selected (not multiple types like GM + GRM)
+            model.Add(sum(ccr_selection_flags) <= 1)
         else:
             model.Add(ccr_runs == 0)
+            # Ensure no CCR is selected if no stage 2 or 3 blocks
+            model.Add(sum(ccr_selection_flags) == 0)
 
     # Hard Constraint 5: Ensure core postings are not over-assigned to each resident
     # HC5 only enforces simple caps. MICU and RCCM are governed exclusively by HC15.
