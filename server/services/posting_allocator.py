@@ -321,6 +321,7 @@ def allocate_timetable(
             total_blocks = sum(x[mcr][p][b] for b in blocks)
             
             # commented out as this should already be enforced by HC3
+            # For postings with required_duration = 1 (like CCR), we add specific constraints in HC4
             # model.Add(total_blocks == count * required_duration)
 
             # bind selection flags to posting asgm count variable
@@ -503,10 +504,29 @@ def allocate_timetable(
             model.Add(ccr_runs == 1)
             # Enforce that exactly one type of CCR is selected (mandatory: 1 run requires 1 type)
             model.Add(sum(ccr_selection_flags) == 1)
+            
+            # Enforce block count equals required_block_duration for each CCR posting
+            for p in offered:
+                required_duration = posting_info[p]["required_block_duration"]
+                ccr_blocks_assigned = sum(x[mcr][p][b] for b in blocks)
+                # If this CCR type is selected, it must have exactly required_duration blocks
+                model.Add(ccr_blocks_assigned == required_duration).OnlyEnforceIf(selection_flags[mcr][p])
+                # If not selected, it must have 0 blocks
+                model.Add(ccr_blocks_assigned == 0).OnlyEnforceIf(selection_flags[mcr][p].Not())
+        
         elif stage2_blocks:  # only stage 2 blocks exist
             model.Add(ccr_runs <= 1)
             # Enforce that only one type of CCR is selected (not multiple types like GM + GRM)
             model.Add(sum(ccr_selection_flags) <= 1)
+            
+            # Enforce block count equals required_block_duration for each CCR posting
+            for p in offered:
+                required_duration = posting_info[p]["required_block_duration"]
+                ccr_blocks_assigned = sum(x[mcr][p][b] for b in blocks)
+                # If this CCR type is selected, it must have exactly required_duration blocks
+                model.Add(ccr_blocks_assigned == required_duration).OnlyEnforceIf(selection_flags[mcr][p])
+                # If not selected, it must have 0 blocks
+                model.Add(ccr_blocks_assigned == 0).OnlyEnforceIf(selection_flags[mcr][p].Not())
         else:
             model.Add(ccr_runs == 0)
             # Ensure no CCR is selected if no stage 2 or 3 blocks
