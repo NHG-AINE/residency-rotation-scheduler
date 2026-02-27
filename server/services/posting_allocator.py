@@ -109,7 +109,7 @@ def allocate_timetable(
             posting_code = entry.get("posting_code")
             _record_pin(mcr, block, posting_code)
 
-    # IMPORTANT: Save the original resident_history before filtering for CCR historical completion checks
+    # Save the original resident_history before filtering for CCR historical completion checks
     original_resident_history = resident_history or []
     
     # Calculate all-time posting progress EARLY to detect completed CCR postings
@@ -480,16 +480,6 @@ def allocate_timetable(
         if not offered:
             continue
 
-        # Log for M66462F
-        if mcr == "M66462F":
-            logger.info(
-                f"HC4 {mcr}: offered={offered}, completed_ccr={completed_ccr_postings}, done_ccr={done_ccr}"
-            )
-            logger.info(f"HC4 {mcr}: all_time_resident_progress keys={list(all_time_resident_progress.keys())}")
-            for p in offered:
-                prog = all_time_resident_progress.get(p, {})
-                logger.info(f"HC4 {mcr}: {p}: blocks_completed={prog.get('blocks_completed')}, is_completed={prog.get('is_completed')}, required={posting_info.get(p, {}).get('required_block_duration')}")
-
         # CCR forbidden in stage 1
         if stage1_blocks:
             for b in stage1_blocks:
@@ -504,8 +494,6 @@ def allocate_timetable(
             for p in offered:
                 for b in blocks:
                     model.Add(x[mcr][p][b] == 0)
-            if mcr == "M66462F":
-                logger.info(f"HC4 {mcr}: CCR already completed. Added constraints to forbid all CCR assignments for all {len(blocks)} blocks.")
 
         # if stage 3 blocks are present (resident could possibly have stage 2 blocks too)
         elif stage3_blocks:
