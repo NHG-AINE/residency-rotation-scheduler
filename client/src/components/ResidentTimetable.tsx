@@ -107,6 +107,7 @@ const ResidentTimetable: React.FC<Props> = ({
   const {
     postingMap,
     preferenceMap,
+    electivePreferencePostingSet,
     srPreferenceMap,
     chosenSrBase,
     pastYearBlockPostings,
@@ -154,6 +155,10 @@ const ResidentTimetable: React.FC<Props> = ({
         return m;
       }, {});
 
+    const electivePreferencePostingSet = new Set(
+      Object.values(preferenceMap).filter((code): code is string => Boolean(code))
+    );
+
     const srPreferenceMap = (apiResponse?.resident_sr_preferences ?? [])
       .filter((p) => p.mcr === resident.mcr && p.base_posting)
       .reduce<Record<number, string>>((m, p) => {
@@ -198,6 +203,7 @@ const ResidentTimetable: React.FC<Props> = ({
     return {
       postingMap,
       preferenceMap,
+      electivePreferencePostingSet,
       srPreferenceMap,
       chosenSrBase,
       pastYearBlockPostings,
@@ -241,6 +247,8 @@ const ResidentTimetable: React.FC<Props> = ({
 
   const electivesCompleted = resident.unique_electives_completed.length;
   const electiveRequirementMet = electivesCompleted >= ELECTIVE_REQUIREMENT;
+  const hasElectivePreferences =
+    Object.values(preferenceMap).filter((code) => code.trim() !== "").length > 0;
 
   const requirementBadgeClass = (fulfilled: boolean) =>
     cn(
@@ -257,6 +265,30 @@ const ResidentTimetable: React.FC<Props> = ({
   );
   // track which blocks have been edited
   const [editedBlocks, setEditedBlocks] = useState<Set<number>>(new Set());
+
+  // HC5: Calculate GM cap based on MedComm status
+  const medcommHistoricallyDone = resident.core_blocks_completed?.MedComm > 0;
+  const computeGmCapAndCounts = (blockPostings: BlockMap): { gmCap: number; gmCountCurrentYear: number; medcommInCurrentYear: boolean } => {
+    let gmCountCurrentYear = 0;
+    let medcommInCurrentYear = false;
+    for (let i = 1; i <= 12; i++) {
+      const assignment = blockPostings[i];
+      if (!assignment || assignment.is_leave) continue;
+      const base = assignment.posting_code?.split(" (")[0]?.trim();
+      if (base === "GM") gmCountCurrentYear++;
+      if (base === "MedComm") medcommInCurrentYear = true;
+    }
+    const gmCap = medcommHistoricallyDone || medcommInCurrentYear ? 12 : 6;
+    return { gmCap, gmCountCurrentYear, medcommInCurrentYear };
+  };
+
+  const { gmCap, gmCountCurrentYear, medcommInCurrentYear } = useMemo(
+    () => computeGmCapAndCounts(currentYearBlockPostings),
+    [currentYearBlockPostings, medcommHistoricallyDone]
+  );
+
+  const gmHistoricalCount = resident.core_blocks_completed?.GM || 0;
+  const isGmAtCapacity = (gmHistoricalCount + gmCountCurrentYear) >= gmCap;
 
   // boolean value to track if edits were made
   const hasEdits = useMemo(
@@ -611,6 +643,10 @@ const ResidentTimetable: React.FC<Props> = ({
                       const postingAssignment =
                         currentYearBlockPostings[blockNumber];
 
+                      // HC5: Calculate remaining GM slots
+                      const gmRemaining = Math.max(0, gmCap - gmHistoricalCount - gmCountCurrentYear);
+                      const isGmAtCapacity = gmRemaining === 0;
+
                       return (
                         <SortableBlockCell
                           key={month}
@@ -618,6 +654,8 @@ const ResidentTimetable: React.FC<Props> = ({
                           postingAssignment={postingAssignment}
                           edited={editedBlocks.has(blockNumber)}
                           postingMap={postingMap}
+                          allowedElectivePostingCodes={electivePreferencePostingSet}
+                          isGmAtCapacity={isGmAtCapacity}
                           onSelectPosting={(code) =>
                             handleSelectPosting(blockNumber, code)
                           }

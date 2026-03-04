@@ -188,21 +188,42 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
         past_prog = get_posting_progress(past_only, posting_info).get(mcr, {})
 
         core_completed_hist = get_core_blocks_completed(past_prog, posting_info)
+        
+        # Check MedComm separately (it's an elective, not in CORE_REQUIREMENTS)
+        medcomm_completed_hist = any(
+            _base_of(p) == "MedComm" and details.get("blocks_completed", 0) > 0
+            for p, details in past_prog.items()
+        )
+        
         base_counts_current_year: Dict[str, int] = {}
+        medcomm_assigned_current_year = False
         for _, info in by_block.items():
-            if info["is_leave"]: # exclude leave postings in block count 
+            if info["is_leave"]:  # exclude leave postings in block count
                 continue
             code = info["posting_code"]
             base = _base_of(code)
+            
+            # Check for MedComm assignment (regardless of posting_type)
+            if base == "MedComm":
+                medcomm_assigned_current_year = True
+            
             if posting_info.get(code, {}).get("posting_type") == "core":
                 base_counts_current_year[base] = base_counts_current_year.get(base, 0) + 1
+
+        gm_cap = 12 if (medcomm_completed_hist or medcomm_assigned_current_year) else int(CORE_REQUIREMENTS.get("GM", 0))
+
         for base, required in CORE_REQUIREMENTS.items():
             hist_done = int(core_completed_hist.get(base, 0))
             current_year_assigned = int(base_counts_current_year.get(base, 0))
-            if hist_done + current_year_assigned > int(required):
+            cap = gm_cap if base == "GM" else int(required)
+            if hist_done + current_year_assigned > cap:
+                if base == "GM":
+                    cap_note = " (GM cap is 12 when MedComm is completed/assigned)"
+                else:
+                    cap_note = ""
                 add_warning(
                     "HC5",
-                    f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > required: {required})",
+                    f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > cap: {cap}){cap_note}",
                 )
 
         # HC6: electives cannot repeat by base posting
