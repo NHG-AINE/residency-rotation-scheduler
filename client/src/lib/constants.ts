@@ -103,8 +103,8 @@ export const SECTIONS = [
         text: "ICU months are staged: pack 1 across years 1 to 2 if not already done, optional pack 2 in year 2, and year 3 completes the remaining months to reach 3 MICU and 3 RCCM total.",
       },
       {
-        label: "HC16 - Balancing within halves",
-        text: "For postings other than GM, ED, and GRM, resident counts are balanced within Jul to Dec and Jan to Jun.",
+        label: "HC16 - Elective preference eligibility",
+        text: "Elective postings can only be assigned if they appear in the resident's elective preference list.",
       },
     ],
   },

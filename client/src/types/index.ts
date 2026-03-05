@@ -13,6 +13,7 @@ export interface ApiResponse {
   resident_history: ResidentHistory[];
   resident_preferences: ResidentPreference[];
   resident_sr_preferences: ResidentSrPreference[];
+  chosen_sr_by_resident: Record<string, string>;
   postings: Posting[];
   statistics: Statistics;
 }
@@ -112,3 +113,5 @@ export interface CsvFilesState {
 export interface CsvRow {
   [key: string]: string | number;
 }
+
+export type MonthView = "ALL" | "FIRST_6" | "LAST_6";

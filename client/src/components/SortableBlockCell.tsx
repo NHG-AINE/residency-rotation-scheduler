@@ -25,6 +25,7 @@ interface SortableBlockCellProps {
   postingAssignment?: ResidentHistory;
   edited: boolean;
   postingMap: Record<string, Posting>;
+  allowedElectivePostingCodes?: Set<string>;
   onSelectPosting?: (code: string) => void;
 }
 
@@ -33,6 +34,7 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
   postingAssignment,
   edited,
   postingMap,
+  allowedElectivePostingCodes,
   onSelectPosting,
 }) => {
   const [open, setOpen] = useState<boolean>(false);
@@ -147,7 +149,8 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
                     const elective = postings.filter(
                       (p) =>
                         !CCR_POSTINGS.includes(p.posting_code) &&
-                        p.posting_type === "elective"
+                        p.posting_type === "elective" &&
+                        (allowedElectivePostingCodes?.has(p.posting_code) ?? true)
                     );
                     const others = postings.filter(
                       (p) =>

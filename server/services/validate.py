@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Tuple
+import logging
 
 from server.utils import (
     get_posting_progress,
@@ -9,6 +10,8 @@ from server.utils import (
     CCR_POSTINGS,
     MONTH_LABELS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _base_of(code: str) -> str:
@@ -30,6 +33,7 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
     residents = payload.get("residents") or []
     resident_history = payload.get("resident_history") or []
     postings = payload.get("postings") or []
+    resident_preferences = payload.get("resident_preferences") or []
 
     warnings: List[Dict[str, str]] = []
 
@@ -187,21 +191,56 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
         past_prog = get_posting_progress(past_only, posting_info).get(mcr, {})
 
         core_completed_hist = get_core_blocks_completed(past_prog, posting_info)
+        
+        # Check MedComm separately (it's an elective, not in CORE_REQUIREMENTS)
+        medcomm_completed_hist = any(
+            _base_of(p) == "MedComm" and details.get("blocks_completed", 0) > 0
+            for p, details in past_prog.items()
+        )
+        
         base_counts_current_year: Dict[str, int] = {}
-        for _, info in by_block.items():
-            if info["is_leave"]: # exclude leave postings in block count 
-                continue
+        medcomm_assigned_current_year = False
+        for block_num, info in by_block.items():
+            # Normalize is_leave to boolean (handle both bool and string representations)
+            is_leave_value = info.get("is_leave")
+            if isinstance(is_leave_value, str):
+                is_leave = is_leave_value.lower() in ('true', '1', 'yes')
+            else:
+                is_leave = bool(is_leave_value)
+            
             code = info["posting_code"]
             base = _base_of(code)
-            if posting_info.get(code, {}).get("posting_type") == "core":
+            
+            if is_leave:  # exclude leave postings in block count
+                logger.debug(f"[HC5]     → Skipping (leave block)")
+                continue
+            
+            # Check for MedComm assignment (regardless of posting_type)
+            if base == "MedComm":
+                medcomm_assigned_current_year = True
+            
+            # Count all postings with bases in CORE_REQUIREMENTS (not just those marked as posting_type="core")
+            if base in CORE_REQUIREMENTS:
                 base_counts_current_year[base] = base_counts_current_year.get(base, 0) + 1
+                logger.debug(f"[HC5]     → Counting {base} (now {base_counts_current_year[base]} blocks)")
+
+        gm_cap = 12 if (medcomm_completed_hist or medcomm_assigned_current_year) else int(CORE_REQUIREMENTS.get("GM", 0))
+
         for base, required in CORE_REQUIREMENTS.items():
             hist_done = int(core_completed_hist.get(base, 0))
             current_year_assigned = int(base_counts_current_year.get(base, 0))
-            if hist_done + current_year_assigned > int(required):
+            cap = gm_cap if base == "GM" else int(required)
+            total = hist_done + current_year_assigned
+                        
+            if total > cap:
+                if base == "GM":
+                    cap_note = " (GM cap is 12 when MedComm is completed/assigned)"
+                else:
+                    cap_note = ""
+                warning_msg = f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > cap: {cap}){cap_note}"
                 add_warning(
                     "HC5",
-                    f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > required: {required})",
+                    warning_msg,
                 )
 
         # HC6: electives cannot repeat by base posting
@@ -216,6 +255,28 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
                     add_warning(
                         "HC6",
                         f"Elective '{base}' already assigned before; cannot repeat",
+                    )
+
+        # HC16: electives must be in resident's elective preference list
+        pref_map: Dict[str, set] = {}
+        for pref in resident_preferences:
+            pref_mcr = pref.get("mcr")
+            pref_posting = pref.get("posting_code")
+            if pref_mcr and pref_posting:
+                if pref_mcr not in pref_map:
+                    pref_map[pref_mcr] = set()
+                pref_map[pref_mcr].add(pref_posting)
+        
+        for _, info in by_block.items():
+            code = info["posting_code"]
+            if info["is_leave"]:
+                continue
+            if posting_info.get(code, {}).get("posting_type") == "elective":
+                resident_prefs = pref_map.get(mcr, set())
+                if code not in resident_prefs:
+                    add_warning(
+                        "HC16",
+                        f"Elective '{code}' is not in the resident's elective preference list",
                     )
 
         # HC4: CCR permitted exactly once (unless already completed or Y1)

@@ -1,4 +1,5 @@
 import copy
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,6 +21,8 @@ from server.services.preprocessing import (
 )
 from server.services.validate import validate_assignment
 from server.utils import MONTH_LABELS
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -63,6 +66,7 @@ def _build_postprocess_payload(
         "resident_sr_preferences": _deepcopy(
             base_input.get("resident_sr_preferences") or []
         ),
+        "chosen_sr_by_resident": _deepcopy(base_input.get("chosen_sr_by_resident") or []),
         "postings": _deepcopy(base_input.get("postings") or []),
         "weightages": _deepcopy(base_input.get("weightages") or {}),
         "balancing_deviations": _deepcopy(base_input.get("balancing_deviations") or {}),
@@ -189,14 +193,19 @@ async def save(payload: Dict[str, Any] = Body(...)):
             {"month_block": entry["month_block"], "posting_code": entry["posting_code"], "is_leave": entry["is_leave"]}
             for entry in current_year
         ],
-        "residents": context.get("residents") or [],
-        "resident_history": context.get("resident_history") or [],
-        "postings": context.get("postings") or [],
+        "residents": store_snapshot.get("residents") or [],
+        "resident_history": store_snapshot.get("resident_history") or [],
+        "postings": store_snapshot.get("postings") or [],
+        "resident_preferences": store_snapshot.get("resident_preferences") or [],
     }
 
     validation_result = validate_assignment(validation_payload)
     if not validation_result.get("success"):
+        logger.error(f"[SAVE] Validation failed for MCR {resident_mcr}")
+        logger.error(f"[SAVE] Validation result: {validation_result}")
         return JSONResponse(status_code=400, content=validation_result)
+    
+    logger.info(f"[SAVE] Validation passed for MCR {resident_mcr}")
 
     residents = _deepcopy(context.get("residents") or [])
     resident_history = _deepcopy(context.get("resident_history") or [])
