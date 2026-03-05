@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Tuple
+import logging
 
 from server.utils import (
     get_posting_progress,
@@ -9,6 +10,8 @@ from server.utils import (
     CCR_POSTINGS,
     MONTH_LABELS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _base_of(code: str) -> str:
@@ -31,6 +34,11 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
     resident_history = payload.get("resident_history") or []
     postings = payload.get("postings") or []
     resident_preferences = payload.get("resident_preferences") or []
+
+    logger.info(f"[VALIDATE] Starting validation for MCR: {mcr}")
+    logger.info(f"[VALIDATE] Current year blocks: {current_year}")
+    logger.info(f"[VALIDATE] Total residents in payload: {len(residents)}")
+    logger.info(f"[VALIDATE] Total postings available: {len(postings)}")
 
     warnings: List[Dict[str, str]] = []
 
@@ -197,33 +205,59 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
         
         base_counts_current_year: Dict[str, int] = {}
         medcomm_assigned_current_year = False
-        for _, info in by_block.items():
-            if info["is_leave"]:  # exclude leave postings in block count
-                continue
+        logger.info(f"[HC5] Processing blocks for leave check and core counting:")
+        for block_num, info in by_block.items():
+            # Normalize is_leave to boolean (handle both bool and string representations)
+            is_leave_value = info.get("is_leave")
+            if isinstance(is_leave_value, str):
+                is_leave = is_leave_value.lower() in ('true', '1', 'yes')
+            else:
+                is_leave = bool(is_leave_value)
+            
             code = info["posting_code"]
             base = _base_of(code)
+            logger.debug(f"[HC5]   Block {block_num}: code={code}, base={base}, is_leave_raw={repr(is_leave_value)}, is_leave_normalized={is_leave}")
+            
+            if is_leave:  # exclude leave postings in block count
+                logger.debug(f"[HC5]     → Skipping (leave block)")
+                continue
             
             # Check for MedComm assignment (regardless of posting_type)
             if base == "MedComm":
                 medcomm_assigned_current_year = True
+                logger.debug(f"[HC5]     → MedComm detected")
             
-            if posting_info.get(code, {}).get("posting_type") == "core":
+            # Count all postings with bases in CORE_REQUIREMENTS (not just those marked as posting_type="core")
+            if base in CORE_REQUIREMENTS:
                 base_counts_current_year[base] = base_counts_current_year.get(base, 0) + 1
+                logger.debug(f"[HC5]     → Counting {base} (now {base_counts_current_year[base]} blocks)")
+
+        logger.info(f"[HC5] MCR: {mcr}")
+        logger.info(f"[HC5] Blocks processed: {by_block}")
+        logger.info(f"[HC5] base_counts_current_year: {base_counts_current_year}")
+        logger.info(f"[HC5] medcomm_completed_hist: {medcomm_completed_hist}, medcomm_assigned_current_year: {medcomm_assigned_current_year}")
 
         gm_cap = 12 if (medcomm_completed_hist or medcomm_assigned_current_year) else int(CORE_REQUIREMENTS.get("GM", 0))
+        logger.info(f"[HC5] GM cap: {gm_cap}")
 
         for base, required in CORE_REQUIREMENTS.items():
             hist_done = int(core_completed_hist.get(base, 0))
             current_year_assigned = int(base_counts_current_year.get(base, 0))
             cap = gm_cap if base == "GM" else int(required)
-            if hist_done + current_year_assigned > cap:
+            total = hist_done + current_year_assigned
+            
+            logger.info(f"[HC5] {base}: hist_done={hist_done}, current_year_assigned={current_year_assigned}, cap={cap}, total={total}")
+            
+            if total > cap:
                 if base == "GM":
                     cap_note = " (GM cap is 12 when MedComm is completed/assigned)"
                 else:
                     cap_note = ""
+                warning_msg = f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > cap: {cap}){cap_note}"
+                logger.warning(f"[HC5] VIOLATION: {warning_msg}")
                 add_warning(
                     "HC5",
-                    f"{base}: exceeds total month requirement (completed: {hist_done} + assigned: {current_year_assigned} > cap: {cap}){cap_note}",
+                    warning_msg,
                 )
 
         # HC6: electives cannot repeat by base posting

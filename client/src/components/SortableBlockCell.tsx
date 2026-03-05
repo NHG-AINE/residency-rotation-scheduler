@@ -26,7 +26,6 @@ interface SortableBlockCellProps {
   edited: boolean;
   postingMap: Record<string, Posting>;
   allowedElectivePostingCodes?: Set<string>;
-  isGmAtCapacity?: boolean;
   onSelectPosting?: (code: string) => void;
 }
 
@@ -36,7 +35,6 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
   edited,
   postingMap,
   allowedElectivePostingCodes,
-  isGmAtCapacity,
   onSelectPosting,
 }) => {
   const [open, setOpen] = useState<boolean>(false);
@@ -80,6 +78,7 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
       : "bg-green-100 text-green-800";
 
   const selected = postingAssignment?.posting_code ?? "";
+  const selectedBase = selected.split(" (")[0]?.trim();
 
   return (
     <TableCell
@@ -146,8 +145,7 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
                     const core = postings.filter(
                       (p) =>
                         !CCR_POSTINGS.includes(p.posting_code) &&
-                        p.posting_type === "core" &&
-                        !(isGmAtCapacity && p.posting_code.split(" (")[0]?.trim() === "GM")
+                        p.posting_type === "core"
                     );
                     const elective = postings.filter(
                       (p) =>
