@@ -78,7 +78,6 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
       : "bg-green-100 text-green-800";
 
   const selected = postingAssignment?.posting_code ?? "";
-  const selectedBase = selected.split(" (")[0]?.trim();
 
   return (
     <TableCell

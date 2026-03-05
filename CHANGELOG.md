@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented in this file. Version numbers follow semantic versioning and dates use `YYYY-MM-DD`.
 
+## [2.0] - 2026-03-05
+### Added
+- Added filtering for PlanningOverviewTable to filter data within 6-month windows for better clarity
+
+### Changed
+- Removed client-side GM capacity filtering from dropdown menu
+  - Users can now freely select all GM postings regardless of current capacity
+  - Capacity validation moved entirely to backend HC5 constraint
+  - Allows users to rearrange/swap GM postings between blocks more flexibly
+
+### Fixed
+- Fixed HC6 to prevent assigning the same elective base multiple times within the current year
+  - Ensures residents cannot be assigned duplicate electives even with different institutions
+- Fixed HC16 validation to ensure assigned electives must be in resident's elective preferences
+  - Added validation payload to check preference list during save
+- Fixed CCR assignment logic to ensure exactly 1 block of 1 type of CCR posting
+  - Prevents multiple CCR types from being assigned in the same year
+- Fixed duplicate CCR assignments and CCR completed status check
+  - Now correctly prevents CCR assignment if already completed historically
+- Fixed HC13 to enforce 3-month consecutive blocks for MICU/RCCM packs even if R3 is not fully completed in current academic year
+  - Enforces contiguous 3-block windows for MICU+RCCM regardless of career completion
+- Fixed SR preference display to use solver-chosen SR value instead of inferring from schedule
+  - Frontend now correctly shows resident's assigned SR department from solver output
+- **Backend HC5 validation**: Correctly count core postings
+  - Changed counting logic from `posting_type == "core"` to checking if posting base is in `CORE_REQUIREMENTS`
+  - Previously, GM/GRM/MICU/RCCM postings not marked as `posting_type="core"` were not being counted, allowing constraint violations
+- **Backend HC5 validation**: Fixed bug where `is_leave` field sent as string `'False'` was treated as truthy
+  - All blocks were being skipped in HC5 validation, bypassing capacity checks entirely
+  - Added boolean normalization to handle both boolean and string representations of `is_leave`
+  - Now correctly distinguishes between leave blocks (excluded) and working blocks (counted)
+- Improved HC5 validation robustness with per-block leave detection logging
+
 ## [1.1] - 2026-01-23
 ### Added
 - Added HC16 to only assign electives from a resident's elective preferences
