@@ -107,6 +107,7 @@ const ResidentTimetable: React.FC<Props> = ({
   const {
     postingMap,
     preferenceMap,
+    electivePreferencePostingSet,
     srPreferenceMap,
     chosenSrBase,
     pastYearBlockPostings,
@@ -154,6 +155,10 @@ const ResidentTimetable: React.FC<Props> = ({
         return m;
       }, {});
 
+    const electivePreferencePostingSet = new Set(
+      Object.values(preferenceMap).filter((code): code is string => Boolean(code))
+    );
+
     const srPreferenceMap = (apiResponse?.resident_sr_preferences ?? [])
       .filter((p) => p.mcr === resident.mcr && p.base_posting)
       .reduce<Record<number, string>>((m, p) => {
@@ -198,6 +203,7 @@ const ResidentTimetable: React.FC<Props> = ({
     return {
       postingMap,
       preferenceMap,
+      electivePreferencePostingSet,
       srPreferenceMap,
       chosenSrBase,
       pastYearBlockPostings,
@@ -618,6 +624,7 @@ const ResidentTimetable: React.FC<Props> = ({
                           postingAssignment={postingAssignment}
                           edited={editedBlocks.has(blockNumber)}
                           postingMap={postingMap}
+                          allowedElectivePostingCodes={electivePreferencePostingSet}
                           onSelectPosting={(code) =>
                             handleSelectPosting(blockNumber, code)
                           }
