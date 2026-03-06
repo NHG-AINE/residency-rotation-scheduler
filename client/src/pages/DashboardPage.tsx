@@ -42,6 +42,7 @@ const HomePage: React.FC = () => {
     postings: null,
   });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [solverProgress, setSolverProgress] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [selectedResidentMcr, setSelectedResidentMcr] = useState<string | null>(
     () => localStorage.getItem("selectedResidentMcr")
@@ -179,7 +180,10 @@ const HomePage: React.FC = () => {
     }
 
     try {
-      const json: ApiResponse & { saved_session_id?: number } = await solve(formData);
+      const json: ApiResponse & { saved_session_id?: number } = await solve(
+        formData,
+        (progress) => setSolverProgress(progress)
+      );
       console.log("API Response:", json);
       if (json.success && json.residents) {
         setApiResponse(json);
@@ -202,6 +206,7 @@ const HomePage: React.FC = () => {
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
+      setSolverProgress("");
     }
   };
 
@@ -389,7 +394,7 @@ const HomePage: React.FC = () => {
           {isProcessing ? (
             <>
               <Loader2Icon className="animate-spin" />
-              Generating...
+              {solverProgress || "Generating..."}
             </>
           ) : apiResponse ? (
             "Re-Generate Timetable"

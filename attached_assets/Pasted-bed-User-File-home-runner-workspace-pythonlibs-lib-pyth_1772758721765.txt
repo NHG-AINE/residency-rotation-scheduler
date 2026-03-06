@@ -1,0 +1,71 @@
+bed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 186, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+raise exc
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+2026-03-06 08:58:19.25
+5df1abed
+User
+await super().__call__(scope, receive, send)
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+2026-03-06 08:58:19.25
+5df1abed
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/applications.py", line 107, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/fastapi/applications.py", line 1134, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/errors.py", line 164, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+2026-03-06 08:58:19.25
+5df1abed
+User
+await self.app(scope, receive, _send)
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/cors.py", line 93, in __call__
+2026-03-06 08:58:19.25
+5df1abed
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+2026-03-06 08:58:19.25
+5df1abed
+User
+raise exc
+2026-03-06 08:58:19.25
+5df1abed
+User
+await self.middleware_stack(scope, receive, send)
+2026-03-06 08:58:19.25
+5df1abed
+User
+await self.simple_response(scope, receive, send, request_headers=headers)

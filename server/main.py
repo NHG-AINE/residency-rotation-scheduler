@@ -1,7 +1,9 @@
 import copy
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,7 +13,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from server.database import get_db, init_db, is_db_available
+from server.database import get_db, init_db, is_db_available, SessionLocal
+from server.jobs import JobStatus, job_manager
 from server.models import SolverSession
 from server.services.posting_allocator import allocate_timetable
 from server.services.postprocess import compute_postprocess
@@ -76,22 +79,11 @@ def _build_postprocess_payload(
     return payload
 
 
-@app.post("/api/solve")
-async def solve(request: Request):
+def _run_solver_job(job_id: str, solver_payload: Dict[str, Any], academic_year: Optional[str]):
+    """Background thread function to run the solver and post-processing."""
     try:
-        # parse form data
-        form = await request.form()
-        
-        # extract academic year for session naming
-        academic_year = None
-        if "academic_year" in form:
-            academic_year = str(form["academic_year"]).strip() or None
+        job_manager.update_status(job_id, JobStatus.RUNNING, "Running solver...")
 
-        # prepare solver input (stateless - client provides previous context if needed)
-        solver_input = await prepare_solver_input(form=form)
-        solver_payload = _deepcopy(solver_input)
-
-        # call the posting allocator
         allocator_result = allocate_timetable(
             residents=solver_payload["residents"],
             resident_history=solver_payload["resident_history"],
@@ -104,42 +96,29 @@ async def solve(request: Request):
             pinned_assignments=solver_payload.get("pinned_assignments", []),
             max_time_in_minutes=solver_payload.get("max_time_in_minutes"),
         )
+
         if not allocator_result.get("success"):
-            raise HTTPException(
-                status_code=500,
-                detail=allocator_result.get(
-                    "error", "Posting allocator service failed unexpectedly."
-                ),
-            )
+            job_manager.fail_job(job_id, allocator_result.get("error", "Solver failed"))
+            return
 
-        # extract solver solution
+        job_manager.update_status(job_id, JobStatus.RUNNING, "Post-processing results...")
+
         solver_solution = allocator_result.get("solver_solution")
-
-        # build postprocess payload
-        postprocess_payload = _build_postprocess_payload(
-            allocator_result, solver_solution
-        )
-
-        # call the postprocess service
+        postprocess_payload = _build_postprocess_payload(allocator_result, solver_solution)
         final_result = compute_postprocess(postprocess_payload)
-        if not final_result.get("success"):
-            raise HTTPException(
-                status_code=500,
-                detail=final_result.get("error", "Postprocess failed"),
-            )
 
-        # Auto-save to database if available
+        if not final_result.get("success"):
+            job_manager.fail_job(job_id, final_result.get("error", "Post-processing failed"))
+            return
+
         saved_session_id = None
         if is_db_available():
             try:
-                from datetime import datetime
-                from server.database import SessionLocal
-                
                 db = SessionLocal()
                 try:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     session_name = f"AY{academic_year} - {timestamp}" if academic_year else f"Session - {timestamp}"
-                    
+
                     new_session = SolverSession(
                         name=session_name,
                         academic_year=academic_year,
@@ -154,17 +133,61 @@ async def solve(request: Request):
             except Exception as save_err:
                 print(f"Auto-save failed: {save_err}")
 
-        # Include session_id in response if saved
         if saved_session_id:
             final_result["saved_session_id"] = saved_session_id
 
-        return final_result
-    except HTTPException:
-        raise
+        job_manager.complete_job(job_id, final_result)
+
+    except Exception as exc:
+        job_manager.fail_job(job_id, str(exc) or "Solver failed unexpectedly")
+
+
+@app.post("/api/solve")
+async def solve(request: Request):
+    try:
+        form = await request.form()
+
+        academic_year = None
+        if "academic_year" in form:
+            academic_year = str(form["academic_year"]).strip() or None
+
+        solver_input = await prepare_solver_input(form=form)
+        solver_payload = _deepcopy(solver_input)
+
+        job = job_manager.create_job()
+        thread = threading.Thread(
+            target=_run_solver_job,
+            args=(job.id, solver_payload, academic_year),
+            daemon=True,
+        )
+        thread.start()
+
+        return {"job_id": job.id, "status": "pending"}
+
     except Exception as exc:
         raise HTTPException(
             status_code=500, detail=str(exc) or "Failed to process files"
         )
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_status(job_id: str):
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.to_dict()
+
+
+@app.get("/api/jobs/{job_id}/result")
+async def get_job_result(job_id: str):
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == JobStatus.PENDING or job.status == JobStatus.RUNNING:
+        raise HTTPException(status_code=202, detail="Job still running")
+    if job.status == JobStatus.FAILED:
+        raise HTTPException(status_code=500, detail=job.error or "Job failed")
+    return job.result
 
 
 @app.post("/api/save")
@@ -193,10 +216,10 @@ async def save(payload: Dict[str, Any] = Body(...)):
             {"month_block": entry["month_block"], "posting_code": entry["posting_code"], "is_leave": entry["is_leave"]}
             for entry in current_year
         ],
-        "residents": store_snapshot.get("residents") or [],
-        "resident_history": store_snapshot.get("resident_history") or [],
-        "postings": store_snapshot.get("postings") or [],
-        "resident_preferences": store_snapshot.get("resident_preferences") or [],
+        "residents": context.get("residents") or [],
+        "resident_history": context.get("resident_history") or [],
+        "postings": context.get("postings") or [],
+        "resident_preferences": context.get("resident_preferences") or [],
     }
 
     validation_result = validate_assignment(validation_payload)
