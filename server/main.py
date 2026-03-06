@@ -216,10 +216,10 @@ async def save(payload: Dict[str, Any] = Body(...)):
             {"month_block": entry["month_block"], "posting_code": entry["posting_code"], "is_leave": entry["is_leave"]}
             for entry in current_year
         ],
-        "residents": store_snapshot.get("residents") or [],
-        "resident_history": store_snapshot.get("resident_history") or [],
-        "postings": store_snapshot.get("postings") or [],
-        "resident_preferences": store_snapshot.get("resident_preferences") or [],
+        "residents": context.get("residents") or [],
+        "resident_history": context.get("resident_history") or [],
+        "postings": context.get("postings") or [],
+        "resident_preferences": context.get("resident_preferences") or [],
     }
 
     validation_result = validate_assignment(validation_payload)
