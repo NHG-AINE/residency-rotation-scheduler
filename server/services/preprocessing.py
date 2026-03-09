@@ -458,22 +458,74 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
         if year is None:
             continue
         career_block = parse_int(row.get("career_block"))
-        formatted.append(
-            {
-                "mcr": mcr,
-                "year": year,
-                "month_block": month_block,
-                "career_block": career_block,
-                "posting_code": str(row.get("posting_code") or "").strip(),
-                "is_current_year": parse_boolean_flag(
-                    row.get("is_current_year") or row.get("isCurrentYear")
-                ),
-                "is_leave": parse_boolean_flag(
-                    row.get("is_leave") or row.get("isLeave")
-                ),
-                "leave_type": str(row.get("leave_type") or "").strip(),
-            }
-        )
+        
+        formatted_row = {
+            "mcr": mcr,
+            "year": year,
+            "month_block": month_block,
+            "career_block": career_block,
+            "posting_code": str(row.get("posting_code") or "").strip(),
+            "is_current_year": parse_boolean_flag(
+                row.get("is_current_year") or row.get("isCurrentYear")
+            ),
+            "is_leave": parse_boolean_flag(
+                row.get("is_leave") or row.get("isLeave")
+            ),
+            "leave_type": str(row.get("leave_type") or "").strip(),
+        }
+
+        formatted.append(formatted_row)
+
+    # Auto-fix specific duplicate pattern:
+    # If the second duplicate of year N block 1 and block 2 are both leave,
+    # and year N+1 block 1 and block 2 do not yet exist, shift those second
+    # duplicates to year N+1 block 1 and 2.
+    by_key: Dict[Tuple[str, int, int], List[int]] = {}
+    for idx, row in enumerate(formatted):
+        mcr = str(row.get("mcr") or "").strip()
+        year = parse_int(row.get("year"))
+        month_block = parse_int(row.get("month_block"))
+        if not mcr or year is None or month_block is None:
+            continue
+        by_key.setdefault((mcr, year, month_block), []).append(idx)
+
+    resident_years: Dict[str, set] = {}
+    for row in formatted:
+        mcr = str(row.get("mcr") or "").strip()
+        year = parse_int(row.get("year"))
+        if not mcr or year is None:
+            continue
+        resident_years.setdefault(mcr, set()).add(year)
+
+    for mcr, years in resident_years.items():
+        for year in sorted(years):
+            dup_block_1 = by_key.get((mcr, year, 1), [])
+            dup_block_2 = by_key.get((mcr, year, 2), [])
+
+            # Need at least a second encounter for both blocks.
+            if len(dup_block_1) < 2 or len(dup_block_2) < 2:
+                continue
+
+            second_block_1 = formatted[dup_block_1[1]]
+            second_block_2 = formatted[dup_block_2[1]]
+
+            # Only shift when both second duplicates are leave blocks.
+            if not parse_boolean_flag(second_block_1.get("is_leave")):
+                continue
+            if not parse_boolean_flag(second_block_2.get("is_leave")):
+                continue
+
+            next_year = year + 1
+            has_next_year_block_1 = (mcr, next_year, 1) in by_key
+            has_next_year_block_2 = (mcr, next_year, 2) in by_key
+
+            # Only shift when next year blocks 1 and 2 are empty.
+            if has_next_year_block_1 or has_next_year_block_2:
+                continue
+
+            second_block_1["year"] = next_year
+            second_block_2["year"] = next_year
+
     return formatted
 
 
@@ -884,16 +936,24 @@ def normalise_current_year_entries(entries: Any) -> List[Dict[str, Any]]:
             continue
         month_block = parse_int(entry.get("month_block"))
         posting_code = str(entry.get("posting_code") or "").strip()
-        is_leave = str(entry.get("is_leave"))
-        if month_block is None or not posting_code or is_leave is None:
+        is_leave_raw = entry.get("is_leave")
+        is_leave = parse_boolean_flag(is_leave_raw)
+        if month_block is None or is_leave_raw is None:
             continue
         career_block = parse_int(entry.get("career_block"))
+        leave_type = str(entry.get("leave_type") or "").strip()
+
+        # Non-leave blocks must carry a posting code; leave blocks may be blank.
+        if not posting_code and not is_leave:
+            continue
+
         normalised.append(
             {
                 "month_block": month_block,
                 "posting_code": posting_code,
                 "is_leave": is_leave,
                 "career_block": career_block,
+                "leave_type": leave_type,
             }
         )
     return normalised

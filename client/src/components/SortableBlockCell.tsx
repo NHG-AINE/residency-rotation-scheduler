@@ -3,7 +3,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
 import type { Posting, ResidentHistory } from "../types";
-import { cn } from "@/lib/utils";
+import { cn, coerceBooleanFlag } from "@/lib/utils";
 import { CCR_POSTINGS } from "@/lib/constants";
 
 import { Button } from "./ui/button";
@@ -44,9 +44,10 @@ const SortableBlockCell: React.FC<SortableBlockCellProps> = ({
     : null;
 
   const code = posting?.posting_code;
-  const isLeave = postingAssignment?.is_leave;
+  const isLeave = coerceBooleanFlag(postingAssignment?.is_leave);
   const leaveType = postingAssignment?.leave_type;
-  const leavePosting = (isLeave && postingAssignment?.posting_code) || "-";
+  const leavePosting =
+    (isLeave && postingAssignment?.posting_code) || leaveType || "-";
 
   const {
     attributes,
