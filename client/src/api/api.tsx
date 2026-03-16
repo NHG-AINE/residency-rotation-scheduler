@@ -10,66 +10,93 @@ export const api = axios.create({
 // types
 export type SaveSchedulePayload = {
   resident_mcr: string;
-  current_year: { month_block: number; posting_code: string }[];
+  current_year: {
+    month_block: number;
+    posting_code: string | null;
+    is_leave?: boolean;
+    leave_type?: string;
+    career_block?: number;
+  }[];
   context: ApiResponse;
 };
 
-type JobStatus = "pending" | "running" | "completed" | "failed";
+// Polling helpers are intentionally disabled for now.
+// type JobStatus = "pending" | "running" | "completed" | "failed";
 
-type JobStatusResponse = {
-  id: string;
-  status: JobStatus;
-  progress: string;
-  error?: string;
-};
+// type JobStatusResponse = {
+//   id: string;
+//   status: JobStatus;
+//   progress: string;
+//   error?: string;
+// };
 
-type SolveJobResponse = {
-  job_id: string;
-  status: string;
-};
+// const pollJobStatus = async (
+//   jobId: string,
+//   onProgress?: (progress: string) => void,
+//   pollInterval: number = 3000
+// ): Promise<ApiResponse> => {
+//   while (true) {
+//     const { data: status } = await api.get<JobStatusResponse>(`/jobs/${jobId}`);
 
-const pollJobStatus = async (
-  jobId: string,
-  onProgress?: (progress: string) => void,
-  pollInterval: number = 3000
-): Promise<ApiResponse> => {
-  while (true) {
-    const { data: status } = await api.get<JobStatusResponse>(`/jobs/${jobId}`);
+//     if (onProgress && status.progress) {
+//       onProgress(status.progress);
+//     }
 
-    if (onProgress && status.progress) {
-      onProgress(status.progress);
-    }
+//     if (status.status === "completed") {
+//       const { data: result } = await api.get<ApiResponse>(`/jobs/${jobId}/result`);
+//       return result;
+//     }
 
-    if (status.status === "completed") {
-      const { data: result } = await api.get<ApiResponse>(`/jobs/${jobId}/result`);
-      return result;
-    }
+//     if (status.status === "failed") {
+//       throw new Error(status.error || "Solver failed");
+//     }
 
-    if (status.status === "failed") {
-      throw new Error(status.error || "Solver failed");
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, pollInterval));
-  }
-};
+//     await new Promise((resolve) => setTimeout(resolve, pollInterval));
+//   }
+// };
 
 // routes
-export const solve = async (
-  formData: FormData,
-  onProgress?: (progress: string) => void
-): Promise<ApiResponse> => {
+
+// POLLING DISABLED: /solve now returns results synchronously
+export const solve = async (formData: FormData): Promise<ApiResponse> => {
   try {
-    const { data } = await api.post<SolveJobResponse>("/solve", formData);
-
-    if (onProgress) {
-      onProgress("Starting solver...");
-    }
-
-    return await pollJobStatus(data.job_id, onProgress);
+    const { data } = await api.post<ApiResponse>("/solve", formData);
+    return data;
   } catch (err: any) {
     throw err;
   }
 };
+
+// COMMENTED OUT: Job polling approach
+// export type SolveJobResponse = {
+//   job_id: string;
+//   status: string;
+// };
+// export const solve = async (formData: FormData): Promise<SolveJobResponse> => {
+//   try {
+//     const { data } = await api.post<SolveJobResponse>("/solve", formData);
+//     return data;
+//   } catch (err: any) {
+//     throw err;
+//   }
+// };
+
+// export const solve = async (
+//   formData: FormData,
+//   onProgress?: (progress: string) => void
+// ): Promise<ApiResponse> => {
+//   try {
+//     const { data } = await api.post<SolveJobResponse>("/solve", formData);
+
+//     if (onProgress) {
+//       onProgress("Starting solver...");
+//     }
+
+//     return await pollJobStatus(data.job_id, onProgress);
+//   } catch (err: any) {
+//     throw err;
+//   }
+// };
 
 export const saveSchedule = async (
   payload: SaveSchedulePayload

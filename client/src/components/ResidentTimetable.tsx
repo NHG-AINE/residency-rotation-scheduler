@@ -32,6 +32,7 @@ import type { AcademicYearRange } from "@/lib/utils";
 import {
   areSchedulesEqual,
   cn,
+  coerceBooleanFlag,
   formatAcademicYearLabel,
   moveByInsert,
 } from "@/lib/utils";
@@ -131,8 +132,13 @@ const ResidentTimetable: React.FC<Props> = ({
       (h) => h.mcr === resident.mcr
     );
 
-    const currentYear = allHistory.filter((h) => h.is_current_year === true);
-    const pastYear = allHistory.filter((h) => h.is_current_year === false);
+    const currentYear = allHistory.filter((h) =>
+      coerceBooleanFlag(h.is_current_year)
+    );
+    const pastYear = allHistory.filter(
+      (h) => !coerceBooleanFlag(h.is_current_year)
+    );
+
     const initialCurrentYearBlockPostings = currentYear.reduce<BlockMap>(
       (m, a) => {
         m[a.month_block] = a;
@@ -285,7 +291,11 @@ const ResidentTimetable: React.FC<Props> = ({
 
     const fromEntry = currentYearBlockPostings[from];
     const toEntry = currentYearBlockPostings[to];
-    if (fromEntry?.is_leave || toEntry?.is_leave) return;
+    if (
+      coerceBooleanFlag(fromEntry?.is_leave) ||
+      coerceBooleanFlag(toEntry?.is_leave)
+    )
+      return;
 
     setCurrentYearBlockPostings((prev) => {
       // insert and move other postings
@@ -313,7 +323,7 @@ const ResidentTimetable: React.FC<Props> = ({
   const handleSelectPosting = (monthBlock: number, newPostingCode: string) => {
     if (isSaving) return;
     setCurrentYearBlockPostings((prev) => {
-      if (prev[monthBlock]?.is_leave) {
+      if (coerceBooleanFlag(prev[monthBlock]?.is_leave)) {
         return prev;
       }
       const updated: BlockMap = { ...prev } as BlockMap;
@@ -373,9 +383,17 @@ const ResidentTimetable: React.FC<Props> = ({
         return { 
           month_block, 
           posting_code: assignment.posting_code ?? null, 
-          is_leave: assignment.is_leave ?? false
+          is_leave: coerceBooleanFlag(assignment.is_leave),
+          leave_type: assignment.leave_type ?? "",
+          career_block: assignment.career_block,
         }
-      }).filter(Boolean) as { month_block: number; posting_code: string; is_leave: boolean }[];
+      }).filter(Boolean) as {
+        month_block: number;
+        posting_code: string | null;
+        is_leave: boolean;
+        leave_type: string;
+        career_block: number;
+      }[];
 
       const updatedApi = await saveSchedule({
         resident_mcr: resident.mcr,
@@ -418,7 +436,7 @@ const ResidentTimetable: React.FC<Props> = ({
       for (let i = 1; i <= 12; i++) {
         const existing = prev[i];
 
-        if (existing?.is_leave) {
+        if (coerceBooleanFlag(existing?.is_leave)) {
           merged[i] = existing;
         } else if (editedBlocks.has(i) && existing) {
           merged[i] = existing;
@@ -546,7 +564,9 @@ const ResidentTimetable: React.FC<Props> = ({
                             : null;
 
                           const code = posting?.posting_code;
-                          const isLeave = postingAssignment?.is_leave;
+                          const isLeave = coerceBooleanFlag(
+                            postingAssignment?.is_leave
+                          );
                           const leaveType = postingAssignment?.leave_type;
 
                           const badgeClass =
