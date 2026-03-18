@@ -246,6 +246,11 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - For electives, only assign postings among the resident's elective preferences. 
 - For each resident and each block: If a posting is elective and the posting is **not** in the resident’s elective preference list, then that posting must never be assigned to the resident.
 
+#### HC17 - Stage 3 elective maximum cap (max 5 total)
+- If a resident finishes Stage 3 in the current planning year (`stage3_finishes == True`), then total electives by end of year are capped at 5.
+- The cap is enforced as: `historical_electives + current_year_elective_selections <= 5`.
+- If historical electives already exceed 5, no new electives are assignable in the current year.
+
 ## Soft Constraints
 
 Refer to `# DEFINE SOFT CONSTRAINTS WITH PENALTIES` section of the code in [`server/services/posting_allocator.py`](./server/services/posting_allocator.py).
@@ -257,7 +262,8 @@ Refer to `# DEFINE SOFT CONSTRAINTS WITH PENALTIES` section of the code in [`ser
   - If elective prefs exist, a second elective (history + current year) earns a bonus (`s2_elective_bonus_terms`).
   - Shortfall uses the same `elective_shortfall_penalty` weight (s2 elective shortfall).
 - Stage 3
-  - Aim for five total electives.
+  - Hard cap from HC17: cannot exceed five total electives by end of Stage 3.
+  - Still encourages hitting exactly five total electives when possible.
   - A slack var (`*_elective_req_unmet`) incurs `elective_shortfall_penalty` when short (s3 elective shortfall).
 
 #### SC2 - Core requirements (stage 3)
