@@ -1220,6 +1220,80 @@ def allocate_timetable(
                 for b in blocks:
                     model.Add(x[mcr][elective][b] == 0)
 
+    # Hard Constraint 17: By end of Stage 3, cap electives to a maximum of 5
+    for resident in residents:
+        mcr = resident["mcr"]
+        if not bool(career_progress[mcr].get("stage3_finishes")):
+            continue
+
+        # Count historical electives from filtered history (excludes current-year rows moved to pins)
+        # so current-year assignments are counted only once via x-variables below.
+        hist_elective_bases = {
+            base_key(p)
+            for p in get_unique_electives_completed(
+                posting_progress.get(mcr, {}), posting_info
+            )
+            if base_key(p)
+        }
+        hist_elective_count = len(hist_elective_bases)
+
+        # Count current-year elective bases from actual assignments, not selection flags.
+        current_year_new_base_flags: List[cp_model.BoolVar] = []
+        for elective_base in ELECTIVE_BASE_CODES:
+            elective_base_key = base_key(elective_base)
+            if not elective_base_key:
+                continue
+
+            # If this base is already completed historically, it already contributes to history count.
+            # Excluding it here avoids double counting in hist + assigned.
+            if elective_base_key in hist_elective_bases:
+                continue
+
+            variants = [
+                p
+                for p in ELECTIVE_POSTINGS
+                if base_key(p) == elective_base_key
+            ]
+            if not variants:
+                continue
+
+            assigned_blocks_for_base = model.NewIntVar(
+                0,
+                len(variants) * len(blocks),
+                f"{mcr}_{to_snake_case(elective_base)}_assigned_blocks",
+            )
+            model.Add(
+                assigned_blocks_for_base
+                == sum(x[mcr][p][b] for p in variants for b in blocks)
+            )
+
+            base_assigned_flag = model.NewBoolVar(
+                f"{mcr}_{to_snake_case(elective_base)}_assigned_flag"
+            )
+            model.Add(assigned_blocks_for_base >= 1).OnlyEnforceIf(base_assigned_flag)
+            model.Add(assigned_blocks_for_base == 0).OnlyEnforceIf(
+                base_assigned_flag.Not()
+            )
+            current_year_new_base_flags.append(base_assigned_flag)
+
+        current_year_new_elective_count = model.NewIntVar(
+            0,
+            len(current_year_new_base_flags),
+            f"{mcr}_elective_new_base_count_cap",
+        )
+        model.Add(current_year_new_elective_count == sum(current_year_new_base_flags))
+
+        # Hard cap at end of Stage 3: historical + assigned this year cannot exceed 5 electives.
+        model.Add(hist_elective_count + current_year_new_elective_count <= 5)
+
+        if hist_elective_count > 5:
+            logger.warning(
+                "HC17 DATA WARNING: %s already has %d historical electives (>5). "
+                "No new electives will be assigned this year.",
+                mcr,
+                hist_elective_count,
+            )
+
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
     ###########################################################################
