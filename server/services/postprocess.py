@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, List
 
 from server.utils import (
@@ -6,6 +7,9 @@ from server.utils import (
     get_unique_electives_completed,
     get_ccr_postings_completed,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def compute_postprocess(payload: Dict) -> Dict:
@@ -353,6 +357,18 @@ def compute_postprocess(payload: Dict) -> Dict:
     ########################################################################
     # RESPONSE PAYLOAD
     ########################################################################
+
+    debug_mcr = "M66973C"
+    debug_rows = [
+        row for row in output_history if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    if debug_rows:
+        logger.info(
+            "[postprocess][resident_history][%s] row_count=%s rows=%s",
+            debug_mcr,
+            len(debug_rows),
+            debug_rows,
+        )
 
     return {
         "success": True,

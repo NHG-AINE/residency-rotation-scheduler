@@ -73,6 +73,11 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type BlockMap = Record<number, ResidentHistory>;
+type PastYearRow = {
+  year: number;
+  occurrence: number;
+  postingsByMonth: BlockMap;
+};
 
 interface Props {
   resident: Resident;
@@ -111,7 +116,7 @@ const ResidentTimetable: React.FC<Props> = ({
     electivePreferencePostingSet,
     srPreferenceMap,
     chosenSrBase,
-    pastYearBlockPostings,
+    pastYearRows,
     initialCurrentYearBlockPostings,
     electiveCounts,
     currentYearItemIds,
@@ -132,14 +137,35 @@ const ResidentTimetable: React.FC<Props> = ({
       (h) => h.mcr === resident.mcr
     );
 
-    const currentYear = allHistory.filter((h) =>
-      coerceBooleanFlag(h.is_current_year)
-    );
-    const pastYear = allHistory.filter(
-      (h) => !coerceBooleanFlag(h.is_current_year)
-    );
+    const residentYearNumber = Number(resident.resident_year);
 
-    const initialCurrentYearBlockPostings = currentYear.reduce<BlockMap>(
+    // Prefer year-aware partitioning so rows are not dropped when
+    // is_current_year is inconsistent in source data.
+    const currentYear = allHistory.filter((h) => {
+      const historyYear = Number(h.year);
+      if (Number.isFinite(residentYearNumber) && Number.isFinite(historyYear)) {
+        return (
+          historyYear === residentYearNumber &&
+          coerceBooleanFlag(h.is_current_year)
+        );
+      }
+      return coerceBooleanFlag(h.is_current_year);
+    });
+
+    const pastYear = allHistory.filter((h) => {
+      const historyYear = Number(h.year);
+      if (Number.isFinite(residentYearNumber) && Number.isFinite(historyYear)) {
+        if (historyYear < residentYearNumber) return true;
+      }
+      return !coerceBooleanFlag(h.is_current_year);
+    });
+
+    const fallbackCurrentYear =
+      currentYear.length === 0
+        ? allHistory.filter((h) => Number(h.year) === residentYearNumber)
+        : currentYear;
+
+    const initialCurrentYearBlockPostings = fallbackCurrentYear.reduce<BlockMap>(
       (m, a) => {
         m[a.month_block] = a;
         return m;
@@ -147,12 +173,81 @@ const ResidentTimetable: React.FC<Props> = ({
       {}
     );
 
-    const pastYearBlockPostings = pastYear.reduce<
-      Record<number, Record<number, ResidentHistory>>
+    // Keep duplicate year rows separate (e.g. Year 1 postings + Year 1 LOA)
+    // by splitting each year into occurrence rows per month block.
+    const groupedPastYear = pastYear.reduce<
+      Record<number, Record<number, ResidentHistory[]>>
     >((m, a) => {
-      (m[a.year] ??= {})[a.month_block] = a;
+      ((m[a.year] ??= {})[a.month_block] ??= []).push(a);
       return m;
     }, {});
+
+    // Stabilise duplicate ordering so occurrence-based rows do not mix
+    // posting/leave entries across months when duplicates exist.
+    const normalisedPastYearByMonth = Object.entries(groupedPastYear).reduce<
+      Record<number, Record<number, ResidentHistory[]>>
+    >((acc, [yearKey, monthMap]) => {
+      const year = Number.parseInt(yearKey, 10);
+      acc[year] = Object.entries(monthMap).reduce<Record<number, ResidentHistory[]>>(
+        (monthAcc, [monthKey, entries]) => {
+          const month = Number.parseInt(monthKey, 10);
+          monthAcc[month] = [...entries].sort((a, b) => {
+            // Prefer non-leave first, then leave, then stable posting code order.
+            const leaveDelta =
+              Number(coerceBooleanFlag(a.is_leave)) -
+              Number(coerceBooleanFlag(b.is_leave));
+            if (leaveDelta !== 0) return leaveDelta;
+            return String(a.posting_code || "").localeCompare(
+              String(b.posting_code || "")
+            );
+          });
+          return monthAcc;
+        },
+        {}
+      );
+      return acc;
+    }, {});
+
+    const pastYearRows: PastYearRow[] = Object.keys(normalisedPastYearByMonth)
+      .map((yearKey) => Number.parseInt(yearKey, 10))
+      .sort((a, b) => a - b)
+      .flatMap((year) => {
+        const postingsByMonthWithDupes = normalisedPastYearByMonth[year] ?? {};
+        const maxOccurrences = Math.max(
+          ...monthLabels.map(
+            (_, i) => (postingsByMonthWithDupes[i + 1] ?? []).length
+          ),
+          0
+        );
+
+        return Array.from({ length: maxOccurrences }, (_, occurrence) => {
+          const postingsByMonth = monthLabels.reduce<BlockMap>((acc, _, i) => {
+            const monthBlock = i + 1;
+            const entry = postingsByMonthWithDupes[monthBlock]?.[occurrence];
+            if (entry) acc[monthBlock] = entry;
+            return acc;
+          }, {} as BlockMap);
+
+          return {
+            year,
+            occurrence,
+            postingsByMonth,
+          };
+        }).filter((row) => Object.keys(row.postingsByMonth).length > 0);
+      });
+
+    if (import.meta.env.DEV && resident.mcr === "M66973C") {
+      // Debug duplicate resident-history mapping for timetable rendering.
+      console.debug("[ResidentTimetable][M66973C] pastYear rows", {
+        totalHistory: allHistory.length,
+        residentYearNumber,
+        currentYearHistory: currentYear,
+        pastYearHistory: pastYear.length,
+        groupedPastYear: normalisedPastYearByMonth,
+        pastYearRows,
+        fallbackCurrentYearCount: fallbackCurrentYear.length,
+      });
+    }
 
     const preferenceMap = (apiResponse?.resident_preferences ?? [])
       .filter((p) => p.mcr === resident.mcr && p.posting_code)
@@ -212,7 +307,7 @@ const ResidentTimetable: React.FC<Props> = ({
       electivePreferencePostingSet,
       srPreferenceMap,
       chosenSrBase,
-      pastYearBlockPostings,
+      pastYearRows,
       initialCurrentYearBlockPostings,
       electiveCounts,
       currentYearItemIds,
@@ -543,18 +638,12 @@ const ResidentTimetable: React.FC<Props> = ({
               </TableHeader>
               <TableBody>
                 {/* Past years */}
-                {Object.keys(pastYearBlockPostings)
-                  .sort(
-                    (a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)
-                  )
-                  .map((yearKey) => {
-                    const numericYear = Number.parseInt(yearKey, 10);
-                    const yearPostings =
-                      pastYearBlockPostings[numericYear] ?? {};
+                {pastYearRows.map((row) => {
+                    const yearPostings = row.postingsByMonth;
                     return (
-                      <TableRow key={`year-${yearKey}`}>
+                      <TableRow key={`year-${row.year}-${row.occurrence}`}>
                         <TableCell className="font-medium text-gray-600">
-                          {formatYearLabel(numericYear)}
+                          {formatYearLabel(row.year)}
                         </TableCell>
                         {monthLabels.map((month, index) => {
                           const blockNumber = index + 1;

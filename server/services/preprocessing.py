@@ -2,11 +2,15 @@ import copy
 import csv
 import io
 import json
+import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from starlette.datastructures import FormData, UploadFile
+
+
+logger = logging.getLogger(__name__)
 
 
 CSV_HEADER_SPECS: Dict[str, Dict[str, Any]] = {
@@ -439,6 +443,7 @@ def _format_residents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "career_blocks_completed": career_blocks,
             }
         )
+
     return formatted
 
 
@@ -478,8 +483,8 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
 
     # Auto-fix specific duplicate pattern:
     # If the second duplicate of year N block 1 and block 2 are both leave,
-    # and year N+1 block 1 and block 2 do not yet exist, shift those second
-    # duplicates to year N+1 block 1 and 2.
+    # and year N+1 block 1 and block 2 do not yet exist, shift all second
+    # duplicate leave blocks (1-12) to year N+1.
     by_key: Dict[Tuple[str, int, int], List[int]] = {}
     for idx, row in enumerate(formatted):
         mcr = str(row.get("mcr") or "").strip()
@@ -523,8 +528,50 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
             if has_next_year_block_1 or has_next_year_block_2:
                 continue
 
-            second_block_1["year"] = next_year
-            second_block_2["year"] = next_year
+            # Condition met: shift ALL second duplicate leave blocks (1-12) to next year
+            for month_block in range(1, 13):
+                dup_key = (mcr, year, month_block)
+                if dup_key in by_key and len(by_key[dup_key]) >= 2:
+                    second_dup_idx = by_key[dup_key][1]
+                    if parse_boolean_flag(formatted[second_dup_idx].get("is_leave")):
+                        formatted[second_dup_idx]["year"] = next_year
+
+    debug_mcr = "M66973C"
+    resident_rows = [
+        row for row in formatted if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    if resident_rows:
+        rows_by_year: Dict[int, Dict[str, int]] = {}
+        for row in resident_rows:
+            year = parse_int(row.get("year")) or 0
+            summary = rows_by_year.setdefault(
+                year,
+                {
+                    "total": 0,
+                    "leave_true": 0,
+                    "leave_false": 0,
+                    "current_year_true": 0,
+                    "current_year_false": 0,
+                },
+            )
+            summary["total"] += 1
+            if parse_boolean_flag(row.get("is_leave")):
+                summary["leave_true"] += 1
+            else:
+                summary["leave_false"] += 1
+
+            if parse_boolean_flag(row.get("is_current_year")):
+                summary["current_year_true"] += 1
+            else:
+                summary["current_year_false"] += 1
+
+        logger.info(
+            "[preprocessing][resident_history][%s] row_count=%s summary_by_year=%s rows=%s",
+            debug_mcr,
+            len(resident_rows),
+            rows_by_year,
+            resident_rows,
+        )
 
     return formatted
 
@@ -747,6 +794,34 @@ async def preprocess_initial_upload(form: FormData) -> Dict[str, Any]:
         file_label=CSV_HEADER_SPECS["resident_history"]["label"],
         header_aliases=CSV_HEADER_SPECS["resident_history"]["aliases"],
     )
+
+    debug_mcr = "M66973C"
+    raw_rows_for_mcr = [
+        row for row in history_csv if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    if raw_rows_for_mcr:
+        raw_summary = {
+            "total": len(raw_rows_for_mcr),
+            "rows_with_is_leave_1": sum(
+                1
+                for row in raw_rows_for_mcr
+                if str(row.get("is_leave") or row.get("isLeave") or "").strip()
+                in {"1", "true", "True", "YES", "yes"}
+            ),
+            "rows_with_is_leave_0": sum(
+                1
+                for row in raw_rows_for_mcr
+                if str(row.get("is_leave") or row.get("isLeave") or "").strip()
+                in {"0", "false", "False", "NO", "no"}
+            ),
+        }
+        logger.info(
+            "[preprocessing][resident_history_raw][%s] summary=%s rows=%s",
+            debug_mcr,
+            raw_summary,
+            raw_rows_for_mcr,
+        )
+
     prefs_csv = await _read_csv_upload(
         prefs_upload,
         expected_headers=CSV_HEADER_SPECS["resident_preferences"]["required"],
@@ -817,7 +892,14 @@ async def prepare_solver_input(form: FormData) -> Dict[str, Any]:
 
     has_previous = bool(previous_response and previous_response.get("residents"))
 
+    logger.info(
+        "[preprocessing] prepare_solver_input path_decision has_pinned=%s has_previous=%s",
+        has_pinned,
+        has_previous,
+    )
+
     if has_pinned and has_previous:
+        logger.info("[preprocessing] using build_pinned_run_input (skips CSV re-parse)")
         solver_input = build_pinned_run_input(
             previous_response=previous_response,
             pinned_mcrs=pinned_mcrs,
@@ -826,6 +908,7 @@ async def prepare_solver_input(form: FormData) -> Dict[str, Any]:
             max_time_in_minutes=form.get("max_time_in_minutes"),
         )
     else:
+        logger.info("[preprocessing] using preprocess_initial_upload (parses CSV files)")
         solver_input = await preprocess_initial_upload(form)
 
     return solver_input
@@ -854,6 +937,18 @@ def build_pinned_run_input(
         for row in history
         if not parse_boolean_flag(row.get("is_current_year"))
     ]
+
+    debug_mcr = "M66973C"
+    debug_rows = [
+        row for row in resident_history if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    if debug_rows:
+        logger.info(
+            "[preprocessing][pinned_run][%s] non_current_history_row_count=%s rows=%s",
+            debug_mcr,
+            len(debug_rows),
+            debug_rows,
+        )
 
     pinned_assignments: Dict[str, List[Dict[str, Any]]] = {}
     derived_leaves: List[Dict[str, Any]] = []
