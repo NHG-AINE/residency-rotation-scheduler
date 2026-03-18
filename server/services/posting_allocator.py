@@ -1585,8 +1585,11 @@ def allocate_timetable(
         blocks_outside = [
             b
             for b in blocks
-            if (career_blocks_by_block.get(b) is not None)
-            and (career_blocks_by_block[b] < 19 or career_blocks_by_block[b] > 30)
+            if (
+                career_blocks_by_block.get(b) is None
+                or career_blocks_by_block[b] < 19
+                or career_blocks_by_block[b] > 30
+            )
         ]
 
         # track coverage flags per base for bonus logic
@@ -1615,13 +1618,17 @@ def allocate_timetable(
             else:
                 model.Add(outside_flag == 0)
 
+            # SR postings must be strictly confined to career blocks 19-30.
+            if outside_terms:
+                model.Add(sum(outside_terms) == 0)
+
             if base_key_value == "gm":
                 if inside_terms:
                     model.Add(sum(inside_terms) >= 3).OnlyEnforceIf(chosen_flag)
                 else:
                     model.Add(chosen_flag == 0)
             else:
-                # Chosen SR is only allowed within the 19–30 window (or not assigned).
+                # Chosen SR is only allowed within the 19-30 window (or not assigned).
                 model.Add(outside_flag == 0).OnlyEnforceIf(chosen_flag)
 
             # bonus for placing chosen SR in career blocks 19–24
