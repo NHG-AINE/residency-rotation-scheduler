@@ -243,6 +243,41 @@ def validate_assignment(payload: Dict[str, Any]) -> Dict[str, Any]:
                     warning_msg,
                 )
 
+        # HC18: by end of R3, all core requirements must be completed.
+        # Determine if this edited timetable reaches/passes end of R3 using
+        # career block progression (leave blocks do not advance progression).
+        try:
+            completed_before = int(resident.get("career_blocks_completed", 0)) if resident else 0
+        except (TypeError, ValueError):
+            completed_before = 0
+
+        non_leave_assigned = sum(
+            1
+            for _, info in by_block.items()
+            if not (
+                str(info.get("is_leave")).strip().lower() in {"true", "1", "yes"}
+                if isinstance(info.get("is_leave"), str)
+                else bool(info.get("is_leave"))
+            )
+        )
+
+        completed_after = completed_before + non_leave_assigned
+        ends_r3_or_beyond = completed_after >= 36
+
+        if ends_r3_or_beyond:
+            for base, required in CORE_REQUIREMENTS.items():
+                total_done = int(core_completed_hist.get(base, 0)) + int(
+                    base_counts_current_year.get(base, 0)
+                )
+                if total_done < int(required):
+                    add_warning(
+                        "HC18",
+                        (
+                            f"{base}: must be completed by end of R3 "
+                            f"(completed: {total_done}/{required})"
+                        ),
+                    )
+
         # HC6: electives cannot repeat by base posting
         completed_elective_bases = {
             _base_of(p) for p in get_unique_electives_completed(past_prog, posting_info)

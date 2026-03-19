@@ -251,6 +251,17 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - The cap is enforced as: `historical_electives + current_year_elective_selections <= 5`.
 - If historical electives already exceed 5, no new electives are assignable in the current year.
 
+#### HC18 - End-of-R3 core completion (all cores must be done)
+- If a resident finishes Stage 3 in the current planning year (`stage3_finishes == True`), all core requirements must be satisfied by end of that year.
+- For each core base in `CORE_REQUIREMENTS`, enforce:
+  - `historical_core_blocks + current_year_assigned_core_blocks >= required_core_blocks`
+- This is a hard feasibility condition in the solver. If impossible to satisfy (e.g., because of pinned rows, leave, or capacity constraints), the model becomes infeasible.
+
+### Save-time Validation Alignment
+
+- Manual timetable edits validated through `validate_assignment` also enforce end-of-R3 core completion (HC18 semantics).
+- When the edited schedule reaches/passes end of R3 (`career_blocks_completed + non_leave_assigned_blocks >= 36`), save is rejected if any core requirement remains short.
+
 ## Soft Constraints
 
 Refer to `# DEFINE SOFT CONSTRAINTS WITH PENALTIES` section of the code in [`server/services/posting_allocator.py`](./server/services/posting_allocator.py).

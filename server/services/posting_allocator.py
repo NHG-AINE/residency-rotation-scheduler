@@ -285,6 +285,67 @@ def allocate_timetable(
             "career_blocks_by_block": career_blocks_by_block,
         }
 
+    # Pre-solver diagnostics for HC18 feasibility.
+    # This flags obvious impossible cases before solving (for clearer logs).
+    hc18_feasibility_hints: List[str] = []
+    hc18_resident_diagnostics: List[str] = []
+    for resident in residents:
+        mcr = resident["mcr"]
+        if not bool(career_progress[mcr].get("stage3_finishes")):
+            continue
+
+        resident_progress = posting_progress.get(mcr, {})
+        core_hist = get_core_blocks_completed(resident_progress, posting_info)
+
+        pinned_block_map = pins_by_resident.get(mcr, {})
+        fixed_core_by_base: Dict[str, int] = {}
+        for _, posting_code in pinned_block_map.items():
+            base = posting_code.split(" (")[0].strip()
+            if base in CORE_REQUIREMENTS:
+                fixed_core_by_base[base] = fixed_core_by_base.get(base, 0) + 1
+
+        resident_leave_blocks = set(leave_map.get(mcr, {}).keys())
+        pinned_count = len(pinned_block_map)
+        free_non_leave_non_pinned = max(0, len(blocks) - len(resident_leave_blocks) - pinned_count)
+
+        deficits_by_base: Dict[str, int] = {}
+        total_deficit = 0
+        for base, required in CORE_REQUIREMENTS.items():
+            hist_done = int(core_hist.get(base, 0))
+            fixed_done = int(fixed_core_by_base.get(base, 0))
+            deficit = max(0, int(required) - (hist_done + fixed_done))
+            deficits_by_base[base] = deficit
+            total_deficit += deficit
+
+        hc18_resident_diagnostics.append(
+            (
+                f"{mcr}: total_deficit={total_deficit}, free_blocks={free_non_leave_non_pinned}, "
+                f"leave_blocks={len(resident_leave_blocks)}, pinned_blocks={pinned_count}, "
+                f"deficits_by_base={deficits_by_base}"
+            )
+        )
+
+        if total_deficit > free_non_leave_non_pinned:
+            hc18_feasibility_hints.append(
+                (
+                    f"{mcr}: HC18 likely infeasible; total core deficit={total_deficit}, "
+                    f"free blocks={free_non_leave_non_pinned}, "
+                    f"leave_blocks={len(resident_leave_blocks)}, pinned_blocks={pinned_count}, "
+                    f"deficits_by_base={deficits_by_base}"
+                )
+            )
+
+    if not hc18_resident_diagnostics:
+        logger.info(
+            "HC18 PRECHECK: no residents with stage3_finishes=True; HC18 did not activate this run."
+        )
+    else:
+        for diag in hc18_resident_diagnostics:
+            logger.info("HC18 PRECHECK: %s", diag)
+
+    for hint in hc18_feasibility_hints:
+        logger.warning("HC18 PRECHECK: %s", hint)
+
     ###########################################################################
     # CREATE DECISION VARIABLES
     ###########################################################################
@@ -1294,6 +1355,26 @@ def allocate_timetable(
                 hist_elective_count,
             )
 
+    # Hard Constraint 18: By end of Stage 3 (R3), all core requirements must be met.
+    for resident in residents:
+        mcr = resident["mcr"]
+        if not bool(career_progress[mcr].get("stage3_finishes")):
+            continue
+
+        core_blocks_completed_map = get_core_blocks_completed(
+            posting_progress.get(mcr, {}), posting_info
+        )
+
+        for base, required in CORE_REQUIREMENTS.items():
+            hist_done = int(core_blocks_completed_map.get(base, 0))
+            assigned = sum(
+                x[mcr][p][b]
+                for p in posting_codes
+                if p.split(" (")[0] == base
+                for b in blocks
+            )
+            model.Add(hist_done + assigned >= required)
+
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
     ###########################################################################
@@ -2018,10 +2099,21 @@ def allocate_timetable(
     if status == cp_model.INFEASIBLE:
         logger.info("Model is infeasible. Checking assumptions...")
 
+        if hc18_feasibility_hints:
+            logger.info(
+                "HC18 precheck identified %d likely infeasible resident(s): %s",
+                len(hc18_feasibility_hints),
+                hc18_feasibility_hints,
+            )
+
         core_names = [
             cp_model.short_name(model.Proto(), lit)
             for lit in solver.SufficientAssumptionsForInfeasibility()
         ]
+        if not core_names:
+            logger.info(
+                "Unsat core is empty because no assumption literals were attached to hard constraints in this model."
+            )
         logger.info("Unsat core: %s", ", ".join(core_names))
         return {
             "success": False,
