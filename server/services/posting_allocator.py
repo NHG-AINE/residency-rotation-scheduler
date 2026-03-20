@@ -289,10 +289,16 @@ def allocate_timetable(
     # This flags obvious impossible cases before solving (for clearer logs).
     hc18_feasibility_hints: List[str] = []
     hc18_resident_diagnostics: List[str] = []
+    hc18_per_core_feasibility_hints: List[str] = []
+    hc18_eligible_mcrs: List[str] = []
+    hc18_ineligible_mcrs: List[str] = []
     for resident in residents:
         mcr = resident["mcr"]
         if not bool(career_progress[mcr].get("stage3_finishes")):
+            hc18_ineligible_mcrs.append(mcr)
             continue
+
+        hc18_eligible_mcrs.append(mcr)
 
         resident_progress = posting_progress.get(mcr, {})
         core_hist = get_core_blocks_completed(resident_progress, posting_info)
@@ -307,8 +313,14 @@ def allocate_timetable(
         resident_leave_blocks = set(leave_map.get(mcr, {}).keys())
         pinned_count = len(pinned_block_map)
         free_non_leave_non_pinned = max(0, len(blocks) - len(resident_leave_blocks) - pinned_count)
+        free_blocks = [
+            b
+            for b in blocks
+            if b not in resident_leave_blocks and b not in pinned_block_map
+        ]
 
         deficits_by_base: Dict[str, int] = {}
+        per_core_candidate_slots: Dict[str, int] = {}
         total_deficit = 0
         for base, required in CORE_REQUIREMENTS.items():
             hist_done = int(core_hist.get(base, 0))
@@ -317,11 +329,53 @@ def allocate_timetable(
             deficits_by_base[base] = deficit
             total_deficit += deficit
 
+            base_variants = [
+                p for p in posting_codes if p.split(" (")[0].strip() == base
+            ]
+            if not base_variants:
+                per_core_candidate_slots[base] = 0
+                if deficit > 0:
+                    hc18_per_core_feasibility_hints.append(
+                        (
+                            f"{mcr}: HC18 likely infeasible for {base}; "
+                            f"deficit={deficit}, no posting variants found."
+                        )
+                    )
+                continue
+
+            candidate_slot_count = 0
+            for b in free_blocks:
+                has_capacity_for_base_in_block = False
+                for variant in base_variants:
+                    max_residents = int(posting_info[variant].get("max_residents", 0) or 0)
+                    reserved_slots = int(
+                        leave_quota_usage.get(variant, {}).get(b, 0)
+                    )
+
+                    # max_residents == 0 means unlimited in this codebase.
+                    if max_residents == 0 or reserved_slots < max_residents:
+                        has_capacity_for_base_in_block = True
+                        break
+
+                if has_capacity_for_base_in_block:
+                    candidate_slot_count += 1
+
+            per_core_candidate_slots[base] = candidate_slot_count
+            if deficit > candidate_slot_count:
+                hc18_per_core_feasibility_hints.append(
+                    (
+                        f"{mcr}: HC18 likely infeasible for {base}; "
+                        f"deficit={deficit}, candidate_slots={candidate_slot_count}, "
+                        f"free_blocks={len(free_blocks)}"
+                    )
+                )
+
         hc18_resident_diagnostics.append(
             (
                 f"{mcr}: total_deficit={total_deficit}, free_blocks={free_non_leave_non_pinned}, "
                 f"leave_blocks={len(resident_leave_blocks)}, pinned_blocks={pinned_count}, "
-                f"deficits_by_base={deficits_by_base}"
+                f"deficits_by_base={deficits_by_base}, "
+                f"candidate_slots_by_base={per_core_candidate_slots}"
             )
         )
 
@@ -1355,25 +1409,10 @@ def allocate_timetable(
                 hist_elective_count,
             )
 
-    # Hard Constraint 18: By end of Stage 3 (R3), all core requirements must be met.
-    for resident in residents:
-        mcr = resident["mcr"]
-        if not bool(career_progress[mcr].get("stage3_finishes")):
-            continue
-
-        core_blocks_completed_map = get_core_blocks_completed(
-            posting_progress.get(mcr, {}), posting_info
-        )
-
-        for base, required in CORE_REQUIREMENTS.items():
-            hist_done = int(core_blocks_completed_map.get(base, 0))
-            assigned = sum(
-                x[mcr][p][b]
-                for p in posting_codes
-                if p.split(" (")[0] == base
-                for b in blocks
-            )
-            model.Add(hist_done + assigned >= required)
+    # HC18 hard enforcement is intentionally disabled to avoid infeasibility.
+    # End-of-R3 core completion is handled by:
+    # 1) soft core shortfall penalties in objective, and
+    # 2) post-solve elective->core replacement repair for R3 finishers.
 
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
@@ -1842,6 +1881,85 @@ def allocate_timetable(
         for p in CORE_POSTINGS:
             core_bonus_terms.append(core_bonus_weight * selection_flags[mcr][p])
 
+    # R3 core-first priority:
+    # For residents finishing Stage 3 this year with outstanding core deficits,
+    # strongly reward filling unmet core blocks (capped at deficit) and
+    # penalise elective block usage so cores are preferred whenever feasible.
+    r3_core_first_bonus_terms = []
+    r3_elective_deprioritisation_terms = []
+    r3_core_first_bonus_weight = 50
+    r3_elective_deprioritisation_weight = 40
+
+    for resident in residents:
+        mcr = resident["mcr"]
+        if not bool(career_progress[mcr].get("stage3_finishes")):
+            continue
+
+        core_blocks_completed_map = get_core_blocks_completed(
+            posting_progress.get(mcr, {}), posting_info
+        )
+
+        pinned_block_map = pins_by_resident.get(mcr, {})
+        fixed_core_by_base: Dict[str, int] = {}
+        for _, posting_code in pinned_block_map.items():
+            base = posting_code.split(" (")[0].strip()
+            if base in CORE_REQUIREMENTS:
+                fixed_core_by_base[base] = fixed_core_by_base.get(base, 0) + 1
+
+        has_unmet_core_from_start = False
+        for base, required in CORE_REQUIREMENTS.items():
+            hist_done = int(core_blocks_completed_map.get(base, 0))
+            fixed_done = int(fixed_core_by_base.get(base, 0))
+            deficit = max(0, int(required) - (hist_done + fixed_done))
+            if deficit <= 0:
+                continue
+
+            has_unmet_core_from_start = True
+            base_variants = [
+                p for p in posting_codes if p.split(" (")[0].strip() == base
+            ]
+            if not base_variants:
+                continue
+
+            assigned_for_base = model.NewIntVar(
+                0,
+                len(base_variants) * len(blocks),
+                f"{mcr}_{to_snake_case(base)}_r3_assigned_for_core_priority",
+            )
+            model.Add(
+                assigned_for_base
+                == sum(x[mcr][p][b] for p in base_variants for b in blocks)
+            )
+
+            deficit_cap = model.NewIntVar(
+                deficit,
+                deficit,
+                f"{mcr}_{to_snake_case(base)}_r3_deficit_cap",
+            )
+            credited_core_fill = model.NewIntVar(
+                0,
+                deficit,
+                f"{mcr}_{to_snake_case(base)}_r3_credited_core_fill",
+            )
+            model.AddMinEquality(credited_core_fill, [assigned_for_base, deficit_cap])
+            r3_core_first_bonus_terms.append(
+                r3_core_first_bonus_weight * credited_core_fill
+            )
+
+        if has_unmet_core_from_start:
+            elective_blocks_for_resident = model.NewIntVar(
+                0,
+                len(ELECTIVE_POSTINGS) * len(blocks),
+                f"{mcr}_r3_elective_blocks_for_core_priority",
+            )
+            model.Add(
+                elective_blocks_for_resident
+                == sum(x[mcr][p][b] for p in ELECTIVE_POSTINGS for b in blocks)
+            )
+            r3_elective_deprioritisation_terms.append(
+                r3_elective_deprioritisation_weight * elective_blocks_for_resident
+            )
+
     # ED + GRM pairing bonus
     ed_grm_pair_bonus_terms = []
     ed_grm_pair_bonus_weight = 5
@@ -2060,12 +2178,14 @@ def allocate_timetable(
         + sum(sr_choice_bonus_terms)  # static, 10
         + sum(seniority_bonus_terms)
         + sum(core_bonus_terms)  # static, 5
+        + sum(r3_core_first_bonus_terms)  # prioritise unmet core fulfilment in R3
         + sum(ed_grm_pair_bonus_terms)  # static, 5
         + sum(three_gm_bonus_terms)  # static, 5
         + sum(ed_grm_gm_bundle_bonus_terms)  # static, 10
         + sum(gm_ktph_bonus_terms)  # static, 1
         - sum(s2_elective_shortfall_penalty_terms)
         - sum(s3_elective_shortfall_penalty_terms)
+        - sum(r3_elective_deprioritisation_terms)  # deprioritise electives in R3 if cores unmet
         - sum(core_shortfall_penalty_terms)
         - sum(micu_rccm_pack_penalty_terms) # core penalty weight
         - sum(off_penalty_terms)  # static, extreme penalty 99
@@ -2168,6 +2288,205 @@ def allocate_timetable(
                         "is_off": bool(is_off_block),
                     }
                 )
+
+        # Best-effort post-solve repair for HC18 behavior:
+        # If an R3-finishing resident still has unmet core requirements,
+        # try replacing assigned elective runs with core runs of matching
+        # required duration where local capacity allows, without adding
+        # hard constraints.
+        entries_by_resident: Dict[str, List[Dict[str, Any]]] = {}
+        assigned_count_by_posting_block: Dict[str, Dict[int, int]] = {}
+        for entry in solution_entries:
+            mcr = entry["mcr"]
+            entries_by_resident.setdefault(mcr, []).append(entry)
+
+            posting_code = entry.get("assigned_posting", "")
+            if entry.get("is_off") or not posting_code:
+                continue
+            posting_block_counts = assigned_count_by_posting_block.setdefault(posting_code, {})
+            b = int(entry.get("month_block", 0))
+            posting_block_counts[b] = posting_block_counts.get(b, 0) + 1
+
+        total_elective_replacements = 0
+        for resident in residents:
+            mcr = resident["mcr"]
+            if not bool(career_progress[mcr].get("stage3_finishes")):
+                continue
+
+            resident_entries = sorted(
+                entries_by_resident.get(mcr, []),
+                key=lambda item: int(item.get("month_block", 0)),
+            )
+            if not resident_entries:
+                continue
+
+            hist_core_map = get_core_blocks_completed(
+                posting_progress.get(mcr, {}), posting_info
+            )
+
+            current_core_counts: Dict[str, int] = {base: 0 for base in CORE_REQUIREMENTS}
+            for entry in resident_entries:
+                posting_code = entry.get("assigned_posting", "")
+                if entry.get("is_off") or not posting_code:
+                    continue
+                base = posting_code.split(" (")[0].strip()
+                if base in CORE_REQUIREMENTS:
+                    current_core_counts[base] = current_core_counts.get(base, 0) + 1
+
+            deficits: Dict[str, int] = {}
+            for base, required in CORE_REQUIREMENTS.items():
+                deficits[base] = max(
+                    0,
+                    int(required) - (int(hist_core_map.get(base, 0)) + int(current_core_counts.get(base, 0))),
+                )
+
+            if not any(deficits.values()):
+                continue
+
+            pinned_blocks = set(pins_by_resident.get(mcr, {}).keys())
+            leave_blocks = set(leave_map.get(mcr, {}).keys())
+            resident_replacements = 0
+
+            # Build elective runs first, then replace whole runs with core runs
+            # when required durations match and local capacity allows.
+            elective_runs: List[Dict[str, Any]] = []
+            i = 0
+            while i < len(resident_entries):
+                entry = resident_entries[i]
+                current_posting = entry.get("assigned_posting", "")
+                b = int(entry.get("month_block", 0))
+
+                if (
+                    entry.get("is_off")
+                    or current_posting not in ELECTIVE_POSTINGS
+                    or b in pinned_blocks
+                    or b in leave_blocks
+                ):
+                    i += 1
+                    continue
+
+                run_entries = [entry]
+                j = i + 1
+                prev_block = b
+                while j < len(resident_entries):
+                    nxt = resident_entries[j]
+                    nxt_posting = nxt.get("assigned_posting", "")
+                    nxt_block = int(nxt.get("month_block", 0))
+                    if (
+                        nxt.get("is_off")
+                        or nxt_posting != current_posting
+                        or nxt_block != prev_block + 1
+                        or nxt_block in pinned_blocks
+                        or nxt_block in leave_blocks
+                    ):
+                        break
+                    run_entries.append(nxt)
+                    prev_block = nxt_block
+                    j += 1
+
+                run_blocks = [int(item.get("month_block", 0)) for item in run_entries]
+                elective_runs.append(
+                    {
+                        "posting": current_posting,
+                        "blocks": run_blocks,
+                        "entries": run_entries,
+                        "length": len(run_blocks),
+                        "start": run_blocks[0],
+                    }
+                )
+                i = j
+
+            for run in elective_runs:
+                if not any(deficits.values()):
+                    break
+
+                run_len = int(run.get("length", 0))
+                run_start = int(run.get("start", 0))
+                run_blocks = list(run.get("blocks", []))
+                run_entries = list(run.get("entries", []))
+                old_posting = str(run.get("posting", "") or "")
+
+                if run_len <= 0 or not run_blocks or not old_posting:
+                    continue
+
+                # Avoid cross-Dec/Jan replacements for multi-block runs.
+                if run_len > 1 and 6 in run_blocks and 7 in run_blocks:
+                    continue
+
+                target_core_posting = ""
+                target_core_base = ""
+                for base, deficit in deficits.items():
+                    if deficit < run_len:
+                        continue
+
+                    core_variants = [
+                        p for p in posting_codes
+                        if p.split(" (")[0].strip() == base
+                        and p in CORE_POSTINGS
+                        and int(posting_info.get(p, {}).get("required_block_duration", 1) or 1) == run_len
+                    ]
+
+                    for core_code in core_variants:
+                        # Respect common start rules for known constrained core runs.
+                        if run_len == 3 and run_start not in {1, 4, 7, 10}:
+                            continue
+                        if base == "GRM" and (run_start % 2 == 0):
+                            continue
+
+                        has_capacity_for_all_blocks = True
+                        for block_num in run_blocks:
+                            max_residents = int(posting_info.get(core_code, {}).get("max_residents", 0) or 0)
+                            reserved_slots = int(
+                                leave_quota_usage.get(core_code, {}).get(block_num, 0) or 0
+                            )
+                            currently_assigned = int(
+                                assigned_count_by_posting_block.get(core_code, {}).get(block_num, 0)
+                            )
+
+                            if max_residents != 0:
+                                available_capacity = max(0, max_residents - reserved_slots)
+                                if currently_assigned >= available_capacity:
+                                    has_capacity_for_all_blocks = False
+                                    break
+
+                        if has_capacity_for_all_blocks:
+                            target_core_posting = core_code
+                            target_core_base = base
+                            break
+
+                    if target_core_posting:
+                        break
+
+                if not target_core_posting:
+                    continue
+
+                for run_entry in run_entries:
+                    run_entry["assigned_posting"] = target_core_posting
+
+                old_counts = assigned_count_by_posting_block.setdefault(old_posting, {})
+                new_counts = assigned_count_by_posting_block.setdefault(target_core_posting, {})
+                for block_num in run_blocks:
+                    old_counts[block_num] = max(0, int(old_counts.get(block_num, 0)) - 1)
+                    new_counts[block_num] = int(new_counts.get(block_num, 0)) + 1
+
+                deficits[target_core_base] = max(0, int(deficits.get(target_core_base, 0)) - run_len)
+                resident_replacements += run_len
+
+            if resident_replacements > 0:
+                remaining_deficits = {k: v for k, v in deficits.items() if v > 0}
+                logger.info(
+                    "HC18 REPAIR: %s replaced %d elective block(s) with core block(s); remaining_core_deficits=%s",
+                    mcr,
+                    resident_replacements,
+                    remaining_deficits,
+                )
+                total_elective_replacements += resident_replacements
+
+        if total_elective_replacements > 0:
+            logger.info(
+                "HC18 REPAIR: total elective->core replacements applied=%d",
+                total_elective_replacements,
+            )
 
         # log OFF usage per resident
         for resident in residents:
