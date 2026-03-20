@@ -12,6 +12,9 @@ from starlette.datastructures import FormData, UploadFile
 
 logger = logging.getLogger(__name__)
 
+# Shared debug resident MCR used across preprocessing checkpoints.
+DEBUG_HISTORY_MCR = "M67294G"
+
 
 CSV_HEADER_SPECS: Dict[str, Dict[str, Any]] = {
     "residents": {
@@ -184,6 +187,10 @@ def parse_max_time_in_minutes(raw: Any) -> Optional[int]:
     if value is None or value <= 0:
         return None
     return value
+
+
+def _year_1_blocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in rows if parse_int(row.get("year")) == 1]
 
 
 def parse_weightages(
@@ -507,8 +514,10 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
             dup_block_1 = by_key.get((mcr, year, 1), [])
             dup_block_2 = by_key.get((mcr, year, 2), [])
 
-            # Need at least a second encounter for both blocks.
-            if len(dup_block_1) < 2 or len(dup_block_2) < 2:
+            # Only apply this legacy auto-fix when there are exactly 2
+            # duplicate tracks for year N. If there are 3+ occurrences,
+            # preserve them as separate rows under the same year.
+            if len(dup_block_1) != 2 or len(dup_block_2) != 2:
                 continue
 
             second_block_1 = formatted[dup_block_1[1]]
@@ -531,47 +540,23 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
             # Condition met: shift ALL second duplicate leave blocks (1-12) to next year
             for month_block in range(1, 13):
                 dup_key = (mcr, year, month_block)
-                if dup_key in by_key and len(by_key[dup_key]) >= 2:
+                if dup_key in by_key and len(by_key[dup_key]) == 2:
                     second_dup_idx = by_key[dup_key][1]
                     if parse_boolean_flag(formatted[second_dup_idx].get("is_leave")):
                         formatted[second_dup_idx]["year"] = next_year
 
-    debug_mcr = "M66973C"
+    debug_mcr = DEBUG_HISTORY_MCR
     resident_rows = [
         row for row in formatted if str(row.get("mcr") or "").strip() == debug_mcr
     ]
-    if resident_rows:
-        rows_by_year: Dict[int, Dict[str, int]] = {}
-        for row in resident_rows:
-            year = parse_int(row.get("year")) or 0
-            summary = rows_by_year.setdefault(
-                year,
-                {
-                    "total": 0,
-                    "leave_true": 0,
-                    "leave_false": 0,
-                    "current_year_true": 0,
-                    "current_year_false": 0,
-                },
-            )
-            summary["total"] += 1
-            if parse_boolean_flag(row.get("is_leave")):
-                summary["leave_true"] += 1
-            else:
-                summary["leave_false"] += 1
-
-            if parse_boolean_flag(row.get("is_current_year")):
-                summary["current_year_true"] += 1
-            else:
-                summary["current_year_false"] += 1
-
-        logger.info(
-            "[preprocessing][resident_history][%s] row_count=%s summary_by_year=%s rows=%s",
-            debug_mcr,
-            len(resident_rows),
-            rows_by_year,
-            resident_rows,
-        )
+    resident_year_1_blocks = _year_1_blocks(resident_rows)
+    logger.info(
+        "[preprocessing][resident_history][%s] row_count=%s year_1_block_count=%s year_1_blocks=%s",
+        debug_mcr,
+        len(resident_rows),
+        len(resident_year_1_blocks),
+        resident_year_1_blocks,
+    )
 
     return formatted
 
@@ -795,32 +780,15 @@ async def preprocess_initial_upload(form: FormData) -> Dict[str, Any]:
         header_aliases=CSV_HEADER_SPECS["resident_history"]["aliases"],
     )
 
-    debug_mcr = "M66973C"
+    debug_mcr = DEBUG_HISTORY_MCR
     raw_rows_for_mcr = [
         row for row in history_csv if str(row.get("mcr") or "").strip() == debug_mcr
     ]
-    if raw_rows_for_mcr:
-        raw_summary = {
-            "total": len(raw_rows_for_mcr),
-            "rows_with_is_leave_1": sum(
-                1
-                for row in raw_rows_for_mcr
-                if str(row.get("is_leave") or row.get("isLeave") or "").strip()
-                in {"1", "true", "True", "YES", "yes"}
-            ),
-            "rows_with_is_leave_0": sum(
-                1
-                for row in raw_rows_for_mcr
-                if str(row.get("is_leave") or row.get("isLeave") or "").strip()
-                in {"0", "false", "False", "NO", "no"}
-            ),
-        }
-        logger.info(
-            "[preprocessing][resident_history_raw][%s] summary=%s rows=%s",
-            debug_mcr,
-            raw_summary,
-            raw_rows_for_mcr,
-        )
+    raw_year_1_blocks = _year_1_blocks(raw_rows_for_mcr)
+    print(
+        f"[preprocessing][resident_history_raw][{debug_mcr}] row_count={len(raw_rows_for_mcr)} "
+        f"year_1_block_count={len(raw_year_1_blocks)} year_1_blocks={raw_year_1_blocks}"
+    )
 
     prefs_csv = await _read_csv_upload(
         prefs_upload,
@@ -938,17 +906,18 @@ def build_pinned_run_input(
         if not parse_boolean_flag(row.get("is_current_year"))
     ]
 
-    debug_mcr = "M66973C"
+    debug_mcr = DEBUG_HISTORY_MCR
     debug_rows = [
         row for row in resident_history if str(row.get("mcr") or "").strip() == debug_mcr
     ]
-    if debug_rows:
-        logger.info(
-            "[preprocessing][pinned_run][%s] non_current_history_row_count=%s rows=%s",
-            debug_mcr,
-            len(debug_rows),
-            debug_rows,
-        )
+    year_1_debug_rows = _year_1_blocks(debug_rows)
+    logger.info(
+        "[preprocessing][pinned_run][%s] non_current_history_row_count=%s year_1_block_count=%s year_1_blocks=%s",
+        debug_mcr,
+        len(debug_rows),
+        len(year_1_debug_rows),
+        year_1_debug_rows,
+    )
 
     pinned_assignments: Dict[str, List[Dict[str, Any]]] = {}
     derived_leaves: List[Dict[str, Any]] = []

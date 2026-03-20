@@ -174,7 +174,7 @@ const ResidentTimetable: React.FC<Props> = ({
     );
 
     // Keep duplicate year rows separate (e.g. Year 1 postings + Year 1 LOA)
-    // by splitting each year into occurrence rows per month block.
+    // by splitting each year into stable non-leave and leave tracks.
     const groupedPastYear = pastYear.reduce<
       Record<number, Record<number, ResidentHistory[]>>
     >((m, a) => {
@@ -182,48 +182,57 @@ const ResidentTimetable: React.FC<Props> = ({
       return m;
     }, {});
 
-    // Stabilise duplicate ordering so occurrence-based rows do not mix
-    // posting/leave entries across months when duplicates exist.
-    const normalisedPastYearByMonth = Object.entries(groupedPastYear).reduce<
-      Record<number, Record<number, ResidentHistory[]>>
-    >((acc, [yearKey, monthMap]) => {
-      const year = Number.parseInt(yearKey, 10);
-      acc[year] = Object.entries(monthMap).reduce<Record<number, ResidentHistory[]>>(
-        (monthAcc, [monthKey, entries]) => {
-          const month = Number.parseInt(monthKey, 10);
-          monthAcc[month] = [...entries].sort((a, b) => {
-            // Prefer non-leave first, then leave, then stable posting code order.
-            const leaveDelta =
-              Number(coerceBooleanFlag(a.is_leave)) -
-              Number(coerceBooleanFlag(b.is_leave));
-            if (leaveDelta !== 0) return leaveDelta;
-            return String(a.posting_code || "").localeCompare(
-              String(b.posting_code || "")
-            );
-          });
-          return monthAcc;
-        },
-        {}
-      );
-      return acc;
-    }, {});
-
-    const pastYearRows: PastYearRow[] = Object.keys(normalisedPastYearByMonth)
+    const pastYearRows: PastYearRow[] = Object.keys(groupedPastYear)
       .map((yearKey) => Number.parseInt(yearKey, 10))
       .sort((a, b) => a - b)
       .flatMap((year) => {
-        const postingsByMonthWithDupes = normalisedPastYearByMonth[year] ?? {};
-        const maxOccurrences = Math.max(
-          ...monthLabels.map(
-            (_, i) => (postingsByMonthWithDupes[i + 1] ?? []).length
-          ),
+        const postingsByMonthWithDupes = groupedPastYear[year] ?? {};
+
+        // Build stable tracks: non-leave tracks first, then leave tracks.
+        const maxNonLeaveTracks = Math.max(
+          ...monthLabels.map((_, i) => {
+            const entries = postingsByMonthWithDupes[i + 1] ?? [];
+            return entries.filter((entry) => !coerceBooleanFlag(entry.is_leave)).length;
+          }),
           0
         );
+        const maxLeaveTracks = Math.max(
+          ...monthLabels.map((_, i) => {
+            const entries = postingsByMonthWithDupes[i + 1] ?? [];
+            return entries.filter((entry) => coerceBooleanFlag(entry.is_leave)).length;
+          }),
+          0
+        );
+        const totalTracks = maxNonLeaveTracks + maxLeaveTracks;
 
-        return Array.from({ length: maxOccurrences }, (_, occurrence) => {
+        return Array.from({ length: totalTracks }, (_, occurrence) => {
           const postingsByMonth = monthLabels.reduce<BlockMap>((acc, _, i) => {
             const monthBlock = i + 1;
-            const entry = postingsByMonthWithDupes[monthBlock]?.[occurrence];
+            const entries = postingsByMonthWithDupes[monthBlock] ?? [];
+
+            const nonLeaveEntries = entries
+              .filter((entry) => !coerceBooleanFlag(entry.is_leave))
+              .sort((a, b) =>
+                String(a.posting_code || "").localeCompare(
+                  String(b.posting_code || "")
+                )
+              );
+            const leaveEntries = entries
+              .filter((entry) => coerceBooleanFlag(entry.is_leave))
+              .sort((a, b) => {
+                const leaveTypeDelta = String(a.leave_type || "").localeCompare(
+                  String(b.leave_type || "")
+                );
+                if (leaveTypeDelta !== 0) return leaveTypeDelta;
+                return String(a.posting_code || "").localeCompare(
+                  String(b.posting_code || "")
+                );
+              });
+
+            const entry =
+              occurrence < maxNonLeaveTracks
+                ? nonLeaveEntries[occurrence]
+                : leaveEntries[occurrence - maxNonLeaveTracks];
             if (entry) acc[monthBlock] = entry;
             return acc;
           }, {} as BlockMap);
@@ -236,14 +245,22 @@ const ResidentTimetable: React.FC<Props> = ({
         }).filter((row) => Object.keys(row.postingsByMonth).length > 0);
       });
 
-    if (import.meta.env.DEV && resident.mcr === "M66973C") {
+    if (import.meta.env.DEV && resident.mcr === "M67294G") {
       // Debug duplicate resident-history mapping for timetable rendering.
-      console.debug("[ResidentTimetable][M66973C] pastYear rows", {
+      console.debug("[ResidentTimetable][M67294G] pastYear rows", {
         totalHistory: allHistory.length,
         residentYearNumber,
         currentYearHistory: currentYear,
         pastYearHistory: pastYear.length,
-        groupedPastYear: normalisedPastYearByMonth,
+        groupedPastYear,
+        pastYearRowCount: pastYearRows.length,
+        pastYearRowSummary: pastYearRows.map((row) => ({
+          year: row.year,
+          monthCount: Object.keys(row.postingsByMonth).length,
+          leaveMonthCount: Object.values(row.postingsByMonth).filter((entry) =>
+            coerceBooleanFlag(entry?.is_leave)
+          ).length,
+        })),
         pastYearRows,
         fallbackCurrentYearCount: fallbackCurrentYear.length,
       });
@@ -652,7 +669,10 @@ const ResidentTimetable: React.FC<Props> = ({
                             ? postingMap[postingAssignment.posting_code]
                             : null;
 
-                          const code = posting?.posting_code;
+                          const code =
+                            posting?.posting_code ||
+                            String(postingAssignment?.posting_code || "").trim() ||
+                            undefined;
                           const isLeave = coerceBooleanFlag(
                             postingAssignment?.is_leave
                           );

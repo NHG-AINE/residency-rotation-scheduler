@@ -11,6 +11,8 @@ from server.utils import (
 
 logger = logging.getLogger(__name__)
 
+DEBUG_HISTORY_MCR = "M67294G"
+
 
 def compute_postprocess(payload: Dict) -> Dict:
     ########################################################################
@@ -358,17 +360,20 @@ def compute_postprocess(payload: Dict) -> Dict:
     # RESPONSE PAYLOAD
     ########################################################################
 
-    debug_mcr = "M66973C"
+    debug_mcr = DEBUG_HISTORY_MCR
     debug_rows = [
         row for row in output_history if str(row.get("mcr") or "").strip() == debug_mcr
     ]
-    if debug_rows:
-        logger.info(
-            "[postprocess][resident_history][%s] row_count=%s rows=%s",
-            debug_mcr,
-            len(debug_rows),
-            debug_rows,
-        )
+    debug_year_1_rows = [
+        row for row in debug_rows if int(str(row.get("year") or "0") or 0) == 1
+    ]
+    logger.info(
+        "[postprocess][resident_history][%s] row_count=%s year_1_row_count=%s year_1_rows=%s",
+        debug_mcr,
+        len(debug_rows),
+        len(debug_year_1_rows),
+        debug_year_1_rows,
+    )
 
     return {
         "success": True,
