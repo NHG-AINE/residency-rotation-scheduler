@@ -1336,6 +1336,9 @@ def allocate_timetable(
                     model.Add(x[mcr][elective][b] == 0)
 
     # Hard Constraint 17: By end of Stage 3, cap electives to a maximum of 5
+    r3_hist_elective_count_map: Dict[str, int] = {}
+    r3_current_year_new_elective_count_vars: Dict[str, cp_model.IntVar] = {}
+    r3_has_pref_uncompleted_elective_map: Dict[str, bool] = {}
     for resident in residents:
         mcr = resident["mcr"]
         if not bool(career_progress[mcr].get("stage3_finishes")):
@@ -1351,6 +1354,16 @@ def allocate_timetable(
             if base_key(p)
         }
         hist_elective_count = len(hist_elective_bases)
+        r3_hist_elective_count_map[mcr] = hist_elective_count
+
+        preferred_elective_bases = {
+            base_key(code)
+            for code in pref_map.get(mcr, {}).values()
+            if code in ELECTIVE_POSTINGS and base_key(code)
+        }
+        r3_has_pref_uncompleted_elective_map[mcr] = any(
+            base not in hist_elective_bases for base in preferred_elective_bases
+        )
 
         # Count current-year elective bases from actual assignments, not selection flags.
         current_year_new_base_flags: List[cp_model.BoolVar] = []
@@ -1397,6 +1410,7 @@ def allocate_timetable(
             f"{mcr}_elective_new_base_count_cap",
         )
         model.Add(current_year_new_elective_count == sum(current_year_new_base_flags))
+        r3_current_year_new_elective_count_vars[mcr] = current_year_new_elective_count
 
         # Hard cap at end of Stage 3: historical + assigned this year cannot exceed 5 electives.
         model.Add(hist_elective_count + current_year_new_elective_count <= 5)
@@ -1409,10 +1423,143 @@ def allocate_timetable(
                 hist_elective_count,
             )
 
-    # HC18 hard enforcement is intentionally disabled to avoid infeasibility.
-    # End-of-R3 core completion is handled by:
-    # 1) soft core shortfall penalties in objective, and
-    # 2) post-solve elective->core replacement repair for R3 finishers.
+    # Hard Constraint 18 (R3 GM excess replacement policy):
+    # For R3 finishers, if there is replaceable GM excess above base requirement (6),
+    # force that excess to be replaced by:
+    # 1) unmet non-GM cores first; and
+    # 2) if all cores are complete, preferred uncompleted electives (subject to cap 5).
+    for resident in residents:
+        mcr = resident["mcr"]
+        if not bool(career_progress[mcr].get("stage3_finishes")):
+            continue
+
+        core_blocks_completed_map = get_core_blocks_completed(
+            posting_progress.get(mcr, {}), posting_info
+        )
+
+        hist_gm_done = int(core_blocks_completed_map.get("GM", 0))
+        gm_assigned_this_year = model.NewIntVar(
+            0,
+            len(posting_codes) * len(blocks),
+            f"{mcr}_gm_assigned_this_year_hc18",
+        )
+        model.Add(
+            gm_assigned_this_year
+            == sum(
+                x[mcr][p][b]
+                for p in posting_codes
+                if p.split(" (")[0].strip() == "GM"
+                for b in blocks
+            )
+        )
+
+        gm_without_excess_limit = max(0, int(CORE_REQUIREMENTS.get("GM", 0)) - hist_gm_done)
+        gm_excess_raw = model.NewIntVar(
+            -len(blocks),
+            len(blocks),
+            f"{mcr}_gm_excess_raw_hc18",
+        )
+        model.Add(gm_excess_raw == gm_assigned_this_year - gm_without_excess_limit)
+        gm_excess_assignable = model.NewIntVar(
+            0,
+            len(blocks),
+            f"{mcr}_gm_excess_assignable_hc18",
+        )
+        model.AddMaxEquality(gm_excess_assignable, [0, gm_excess_raw])
+
+        # Compute unmet non-GM core deficits at end of year from model assignments.
+        non_gm_deficit_terms: List[cp_model.IntVar] = []
+        for base, required in CORE_REQUIREMENTS.items():
+            if base == "GM":
+                continue
+
+            hist_done = int(core_blocks_completed_map.get(base, 0))
+            assigned_this_year = model.NewIntVar(
+                0,
+                len(posting_codes) * len(blocks),
+                f"{mcr}_{to_snake_case(base)}_assigned_this_year_hc18",
+            )
+            model.Add(
+                assigned_this_year
+                == sum(
+                    x[mcr][p][b]
+                    for p in posting_codes
+                    if p.split(" (")[0].strip() == base
+                    for b in blocks
+                )
+            )
+
+            deficit_raw = model.NewIntVar(
+                -len(blocks),
+                int(required),
+                f"{mcr}_{to_snake_case(base)}_deficit_raw_hc18",
+            )
+            model.Add(deficit_raw == int(required) - (hist_done + assigned_this_year))
+            deficit = model.NewIntVar(
+                0,
+                int(required),
+                f"{mcr}_{to_snake_case(base)}_deficit_hc18",
+            )
+            model.AddMaxEquality(deficit, [0, deficit_raw])
+            non_gm_deficit_terms.append(deficit)
+
+        non_gm_total_deficit = model.NewIntVar(
+            0,
+            sum(int(CORE_REQUIREMENTS[b]) for b in CORE_REQUIREMENTS if b != "GM"),
+            f"{mcr}_non_gm_total_deficit_hc18",
+        )
+        if non_gm_deficit_terms:
+            model.Add(non_gm_total_deficit == sum(non_gm_deficit_terms))
+        else:
+            model.Add(non_gm_total_deficit == 0)
+
+        non_gm_deficit_exists = model.NewBoolVar(f"{mcr}_non_gm_deficit_exists_hc18")
+        model.Add(non_gm_total_deficit >= 1).OnlyEnforceIf(non_gm_deficit_exists)
+        model.Add(non_gm_total_deficit == 0).OnlyEnforceIf(non_gm_deficit_exists.Not())
+
+        # If there are unmet non-GM cores, any replaceable GM excess is forbidden.
+        model.Add(gm_excess_assignable == 0).OnlyEnforceIf(non_gm_deficit_exists)
+
+        # If all cores are complete, but elective replacement is still possible
+        # (preference-allowed uncompleted elective exists and elective cap room remains),
+        # any replaceable GM excess is also forbidden.
+        hist_elective_count = int(r3_hist_elective_count_map.get(mcr, 0))
+        elective_room_limit = max(0, 5 - hist_elective_count)
+        has_pref_uncompleted_elective = bool(
+            r3_has_pref_uncompleted_elective_map.get(mcr, False)
+        )
+        current_year_new_elective_count = r3_current_year_new_elective_count_vars.get(mcr)
+
+        if has_pref_uncompleted_elective and current_year_new_elective_count is not None and elective_room_limit > 0:
+            elective_replacement_room = model.NewBoolVar(
+                f"{mcr}_elective_replacement_room_hc18"
+            )
+            # There is room for at least one more elective base if assigned this year < room limit.
+            model.Add(current_year_new_elective_count <= elective_room_limit - 1).OnlyEnforceIf(
+                elective_replacement_room
+            )
+            model.Add(current_year_new_elective_count >= elective_room_limit).OnlyEnforceIf(
+                elective_replacement_room.Not()
+            )
+
+            all_non_gm_cores_completed = model.NewBoolVar(
+                f"{mcr}_all_non_gm_cores_completed_hc18"
+            )
+            model.Add(non_gm_total_deficit == 0).OnlyEnforceIf(all_non_gm_cores_completed)
+            model.Add(non_gm_total_deficit >= 1).OnlyEnforceIf(all_non_gm_cores_completed.Not())
+
+            must_remove_excess_for_elective = model.NewBoolVar(
+                f"{mcr}_must_remove_excess_for_elective_hc18"
+            )
+            model.Add(must_remove_excess_for_elective <= all_non_gm_cores_completed)
+            model.Add(must_remove_excess_for_elective <= elective_replacement_room)
+            model.Add(
+                must_remove_excess_for_elective
+                >= all_non_gm_cores_completed + elective_replacement_room - 1
+            )
+            model.Add(gm_excess_assignable == 0).OnlyEnforceIf(
+                must_remove_excess_for_elective
+            )
 
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
@@ -2471,6 +2618,397 @@ def allocate_timetable(
 
                 deficits[target_core_base] = max(0, int(deficits.get(target_core_base, 0)) - run_len)
                 resident_replacements += run_len
+
+            # Recompute deficits after elective->core replacements.
+            current_core_counts = {base: 0 for base in CORE_REQUIREMENTS}
+            for entry in resident_entries:
+                posting_code = entry.get("assigned_posting", "")
+                if entry.get("is_off") or not posting_code:
+                    continue
+                base = posting_code.split(" (")[0].strip()
+                if base in CORE_REQUIREMENTS:
+                    current_core_counts[base] = current_core_counts.get(base, 0) + 1
+
+            deficits = {
+                base: max(
+                    0,
+                    int(required)
+                    - (
+                        int(hist_core_map.get(base, 0))
+                        + int(current_core_counts.get(base, 0))
+                    ),
+                )
+                for base, required in CORE_REQUIREMENTS.items()
+            }
+
+            # Excess GM handling after HC18 repair:
+            # excess = total_GM(historical + assigned this year) - 6.
+            gm_required = int(CORE_REQUIREMENTS.get("GM", 0))
+            total_gm_done = int(hist_core_map.get("GM", 0)) + int(
+                current_core_counts.get("GM", 0)
+            )
+            excess_gm_remaining = max(0, total_gm_done - gm_required)
+
+            if excess_gm_remaining > 0:
+                def _build_runs_for_base(
+                    entries: List[Dict[str, Any]],
+                    base_name: str,
+                    exclude_postings: Optional[Set[str]] = None,
+                ) -> List[Dict[str, Any]]:
+                    runs: List[Dict[str, Any]] = []
+                    idx = 0
+                    excluded = exclude_postings or set()
+                    while idx < len(entries):
+                        curr = entries[idx]
+                        curr_posting = curr.get("assigned_posting", "")
+                        curr_block = int(curr.get("month_block", 0))
+                        curr_base = curr_posting.split(" (")[0].strip()
+
+                        if (
+                            curr.get("is_off")
+                            or curr_base != base_name
+                            or curr_posting in excluded
+                            or curr_block in pinned_blocks
+                            or curr_block in leave_blocks
+                        ):
+                            idx += 1
+                            continue
+
+                        run_entries = [curr]
+                        jdx = idx + 1
+                        prev_block = curr_block
+                        while jdx < len(entries):
+                            nxt = entries[jdx]
+                            nxt_posting = nxt.get("assigned_posting", "")
+                            nxt_block = int(nxt.get("month_block", 0))
+                            nxt_base = nxt_posting.split(" (")[0].strip()
+                            if (
+                                nxt.get("is_off")
+                                or nxt_base != base_name
+                                or nxt_posting != curr_posting
+                                or nxt_posting in excluded
+                                or nxt_block != prev_block + 1
+                                or nxt_block in pinned_blocks
+                                or nxt_block in leave_blocks
+                            ):
+                                break
+                            run_entries.append(nxt)
+                            prev_block = nxt_block
+                            jdx += 1
+
+                        run_blocks = [
+                            int(item.get("month_block", 0)) for item in run_entries
+                        ]
+                        runs.append(
+                            {
+                                "posting": curr_posting,
+                                "entries": run_entries,
+                                "blocks": run_blocks,
+                                "length": len(run_blocks),
+                                "start": run_blocks[0],
+                            }
+                        )
+                        idx = jdx
+
+                    return runs
+
+                gm_runs = _build_runs_for_base(
+                    resident_entries,
+                    "GM",
+                    exclude_postings=set(CCR_POSTINGS),
+                )
+
+                gm_to_core_replaced = 0
+                gm_to_elective_replaced = 0
+
+                # Pass 1: replace extra GM with OTHER unmet cores first.
+                for gm_run in gm_runs:
+                    if excess_gm_remaining <= 0:
+                        break
+
+                    run_blocks_all = list(gm_run.get("blocks", []))
+                    run_entries_all = list(gm_run.get("entries", []))
+                    old_posting = str(gm_run.get("posting", "") or "")
+                    if not run_blocks_all or not run_entries_all or not old_posting:
+                        continue
+
+                    segment_start_idx = 0
+                    while (
+                        segment_start_idx < len(run_blocks_all)
+                        and excess_gm_remaining > 0
+                    ):
+                        unmet_other_cores = {
+                            base: need
+                            for base, need in deficits.items()
+                            if base != "GM" and need > 0
+                        }
+                        if not unmet_other_cores:
+                            break
+
+                        remaining_len = len(run_blocks_all) - segment_start_idx
+                        matched = False
+                        for seg_len in [3, 2, 1]:
+                            if seg_len > remaining_len or seg_len > excess_gm_remaining:
+                                continue
+
+                            seg_blocks = run_blocks_all[
+                                segment_start_idx : segment_start_idx + seg_len
+                            ]
+                            seg_entries = run_entries_all[
+                                segment_start_idx : segment_start_idx + seg_len
+                            ]
+                            seg_start = seg_blocks[0]
+
+                            if seg_len > 1 and 6 in seg_blocks and 7 in seg_blocks:
+                                continue
+
+                            target_core_posting = ""
+                            target_core_base = ""
+                            for base, need in unmet_other_cores.items():
+                                if need < seg_len:
+                                    continue
+
+                                core_variants = [
+                                    p
+                                    for p in posting_codes
+                                    if p.split(" (")[0].strip() == base
+                                    and p in CORE_POSTINGS
+                                    and int(
+                                        posting_info.get(p, {}).get(
+                                            "required_block_duration", 1
+                                        )
+                                        or 1
+                                    )
+                                    == seg_len
+                                ]
+
+                                for core_code in core_variants:
+                                    if seg_len == 3 and seg_start not in {1, 4, 7, 10}:
+                                        continue
+                                    if base == "GRM" and (seg_start % 2 == 0):
+                                        continue
+
+                                    has_capacity = True
+                                    for block_num in seg_blocks:
+                                        max_residents = int(
+                                            posting_info.get(core_code, {}).get(
+                                                "max_residents", 0
+                                            )
+                                            or 0
+                                        )
+                                        reserved_slots = int(
+                                            leave_quota_usage.get(core_code, {}).get(
+                                                block_num, 0
+                                            )
+                                            or 0
+                                        )
+                                        currently_assigned = int(
+                                            assigned_count_by_posting_block.get(
+                                                core_code, {}
+                                            ).get(block_num, 0)
+                                        )
+                                        if max_residents != 0:
+                                            available_capacity = max(
+                                                0, max_residents - reserved_slots
+                                            )
+                                            if currently_assigned >= available_capacity:
+                                                has_capacity = False
+                                                break
+
+                                    if has_capacity:
+                                        target_core_posting = core_code
+                                        target_core_base = base
+                                        break
+
+                                if target_core_posting:
+                                    break
+
+                            if not target_core_posting:
+                                continue
+
+                            for seg_entry in seg_entries:
+                                seg_entry["assigned_posting"] = target_core_posting
+
+                            old_counts = assigned_count_by_posting_block.setdefault(
+                                old_posting, {}
+                            )
+                            new_counts = assigned_count_by_posting_block.setdefault(
+                                target_core_posting, {}
+                            )
+                            for block_num in seg_blocks:
+                                old_counts[block_num] = max(
+                                    0, int(old_counts.get(block_num, 0)) - 1
+                                )
+                                new_counts[block_num] = int(new_counts.get(block_num, 0)) + 1
+
+                            deficits[target_core_base] = max(
+                                0, int(deficits.get(target_core_base, 0)) - seg_len
+                            )
+                            excess_gm_remaining = max(0, excess_gm_remaining - seg_len)
+                            gm_to_core_replaced += seg_len
+                            segment_start_idx += seg_len
+                            matched = True
+                            break
+
+                        if not matched:
+                            segment_start_idx += 1
+
+                # Pass 2: if all cores are completed and extra GM remains,
+                # replace extra GM with preferred non-repeated electives.
+                all_cores_completed = not any(val > 0 for val in deficits.values())
+                if all_cores_completed and excess_gm_remaining > 0:
+                    pref_ranked = sorted((pref_map.get(mcr, {}) or {}).items())
+                    preferred_postings = [code for _, code in pref_ranked if code]
+
+                    hist_elective_bases = {
+                        base_key(p)
+                        for p in get_unique_electives_completed(
+                            posting_progress.get(mcr, {}), posting_info
+                        )
+                        if base_key(p)
+                    }
+                    current_elective_bases = {
+                        base_key(entry.get("assigned_posting", ""))
+                        for entry in resident_entries
+                        if (
+                            not entry.get("is_off")
+                            and entry.get("assigned_posting", "") in ELECTIVE_POSTINGS
+                            and base_key(entry.get("assigned_posting", ""))
+                        )
+                    }
+
+                    gm_runs = _build_runs_for_base(
+                        resident_entries,
+                        "GM",
+                        exclude_postings=set(CCR_POSTINGS),
+                    )
+                    for gm_run in gm_runs:
+                        if excess_gm_remaining <= 0:
+                            break
+
+                        run_blocks_all = list(gm_run.get("blocks", []))
+                        run_entries_all = list(gm_run.get("entries", []))
+                        old_posting = str(gm_run.get("posting", "") or "")
+                        if not run_blocks_all or not run_entries_all or not old_posting:
+                            continue
+
+                        segment_start_idx = 0
+                        while (
+                            segment_start_idx < len(run_blocks_all)
+                            and excess_gm_remaining > 0
+                        ):
+                            remaining_len = len(run_blocks_all) - segment_start_idx
+                            matched = False
+                            for seg_len in [3, 2, 1]:
+                                if seg_len > remaining_len or seg_len > excess_gm_remaining:
+                                    continue
+
+                                seg_blocks = run_blocks_all[
+                                    segment_start_idx : segment_start_idx + seg_len
+                                ]
+                                seg_entries = run_entries_all[
+                                    segment_start_idx : segment_start_idx + seg_len
+                                ]
+                                seg_start = seg_blocks[0]
+
+                                if seg_len > 1 and 6 in seg_blocks and 7 in seg_blocks:
+                                    continue
+
+                                target_elective = ""
+                                target_elective_base = ""
+                                for elective_code in preferred_postings:
+                                    if elective_code not in ELECTIVE_POSTINGS:
+                                        continue
+
+                                    elective_base = base_key(elective_code)
+                                    if (
+                                        not elective_base
+                                        or elective_base in hist_elective_bases
+                                        or elective_base in current_elective_bases
+                                    ):
+                                        continue
+
+                                    elective_dur = int(
+                                        posting_info.get(elective_code, {}).get(
+                                            "required_block_duration", 1
+                                        )
+                                        or 1
+                                    )
+                                    if elective_dur != seg_len:
+                                        continue
+
+                                    if seg_len == 3 and seg_start not in {1, 4, 7, 10}:
+                                        continue
+
+                                    has_capacity = True
+                                    for block_num in seg_blocks:
+                                        max_residents = int(
+                                            posting_info.get(elective_code, {}).get(
+                                                "max_residents", 0
+                                            )
+                                            or 0
+                                        )
+                                        reserved_slots = int(
+                                            leave_quota_usage.get(elective_code, {}).get(
+                                                block_num, 0
+                                            )
+                                            or 0
+                                        )
+                                        currently_assigned = int(
+                                            assigned_count_by_posting_block.get(
+                                                elective_code, {}
+                                            ).get(block_num, 0)
+                                        )
+                                        if max_residents != 0:
+                                            available_capacity = max(
+                                                0, max_residents - reserved_slots
+                                            )
+                                            if currently_assigned >= available_capacity:
+                                                has_capacity = False
+                                                break
+
+                                    if has_capacity:
+                                        target_elective = elective_code
+                                        target_elective_base = elective_base
+                                        break
+
+                                if not target_elective:
+                                    continue
+
+                                for seg_entry in seg_entries:
+                                    seg_entry["assigned_posting"] = target_elective
+
+                                old_counts = assigned_count_by_posting_block.setdefault(
+                                    old_posting, {}
+                                )
+                                new_counts = assigned_count_by_posting_block.setdefault(
+                                    target_elective, {}
+                                )
+                                for block_num in seg_blocks:
+                                    old_counts[block_num] = max(
+                                        0, int(old_counts.get(block_num, 0)) - 1
+                                    )
+                                    new_counts[block_num] = int(new_counts.get(block_num, 0)) + 1
+
+                                current_elective_bases.add(target_elective_base)
+                                excess_gm_remaining = max(0, excess_gm_remaining - seg_len)
+                                gm_to_elective_replaced += seg_len
+                                segment_start_idx += seg_len
+                                matched = True
+                                break
+
+                            if not matched:
+                                segment_start_idx += 1
+
+                if gm_to_core_replaced > 0 or gm_to_elective_replaced > 0:
+                    logger.info(
+                        "HC18 GM REPAIR: %s gm_to_core_blocks=%d, gm_to_elective_blocks=%d, excess_gm_remaining=%d, remaining_core_deficits=%s",
+                        mcr,
+                        gm_to_core_replaced,
+                        gm_to_elective_replaced,
+                        excess_gm_remaining,
+                        {k: v for k, v in deficits.items() if v > 0},
+                    )
 
             if resident_replacements > 0:
                 remaining_deficits = {k: v for k, v in deficits.items() if v > 0}
