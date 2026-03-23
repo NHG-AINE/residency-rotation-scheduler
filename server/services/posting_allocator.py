@@ -1424,14 +1424,25 @@ def allocate_timetable(
             )
 
     # Hard Constraint 18 (R3 GM excess replacement policy):
-    # For R3 finishers, if there is replaceable GM excess above base requirement (6),
+    # For residents with Stage-3 presence in this planning year,
+    # if there is replaceable GM excess above base requirement (6),
     # force that excess to be replaced by:
     # 1) unmet non-GM cores first; and
     # 2) if all cores are complete, preferred uncompleted electives (subject to cap 5).
+    hc18_gm_policy_eligible_mcrs: List[str] = []
+    hc18_gm_policy_ineligible_mcrs: List[str] = []
+    hc18_gm_policy_debug_vars: Dict[str, Dict[str, Any]] = {}
     for resident in residents:
         mcr = resident["mcr"]
-        if not bool(career_progress[mcr].get("stage3_finishes")):
+        stage3_finishes = bool(career_progress[mcr].get("stage3_finishes"))
+        stages_present = set(career_progress[mcr].get("stages_by_block", {}).values())
+        has_stage3_blocks = 3 in stages_present
+
+        if not (stage3_finishes or has_stage3_blocks):
+            hc18_gm_policy_ineligible_mcrs.append(mcr)
             continue
+
+        hc18_gm_policy_eligible_mcrs.append(mcr)
 
         core_blocks_completed_map = get_core_blocks_completed(
             posting_progress.get(mcr, {}), posting_info
@@ -1560,6 +1571,27 @@ def allocate_timetable(
             model.Add(gm_excess_assignable == 0).OnlyEnforceIf(
                 must_remove_excess_for_elective
             )
+
+        hc18_gm_policy_debug_vars[mcr] = {
+            "stage3_finishes": stage3_finishes,
+            "has_stage3_blocks": has_stage3_blocks,
+            "hist_gm_done": hist_gm_done,
+            "gm_assigned_this_year": gm_assigned_this_year,
+            "gm_excess_assignable": gm_excess_assignable,
+            "non_gm_total_deficit": non_gm_total_deficit,
+            "elective_new_base_count": current_year_new_elective_count,
+        }
+
+    logger.info(
+        "HC18 GM POLICY: eligible residents (stage3_finishes OR has_stage3_blocks) count=%d, mcrs=%s",
+        len(hc18_gm_policy_eligible_mcrs),
+        sorted(hc18_gm_policy_eligible_mcrs),
+    )
+    logger.info(
+        "HC18 GM POLICY: ineligible residents count=%d, mcrs=%s",
+        len(hc18_gm_policy_ineligible_mcrs),
+        sorted(hc18_gm_policy_ineligible_mcrs),
+    )
 
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
@@ -2391,6 +2423,31 @@ def allocate_timetable(
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         logger.info("Model is feasible. Preparing output for post-processing...")
 
+        for mcr, debug_vars in hc18_gm_policy_debug_vars.items():
+            logger.info(
+                "HC18 GM POLICY DEBUG: %s stage3_finishes=%s has_stage3_blocks=%s hist_gm_done=%d gm_assigned_this_year=%d gm_excess_assignable=%d non_gm_total_deficit=%d",
+                mcr,
+                debug_vars.get("stage3_finishes"),
+                debug_vars.get("has_stage3_blocks"),
+                int(debug_vars.get("hist_gm_done", 0)),
+                int(solver.Value(debug_vars["gm_assigned_this_year"])),
+                int(solver.Value(debug_vars["gm_excess_assignable"])),
+                int(solver.Value(debug_vars["non_gm_total_deficit"])),
+            )
+            if mcr == DEBUG_HC18_MCR:
+                elective_new_base_count = debug_vars.get("elective_new_base_count")
+                if elective_new_base_count is None:
+                    logger.info(
+                        "HC18 DEBUG %s POLICY DETAIL: elective_new_base_count=N/A (stage3_finishes=False)",
+                        mcr,
+                    )
+                else:
+                    logger.info(
+                        "HC18 DEBUG %s POLICY DETAIL: elective_new_base_count=%d",
+                        mcr,
+                        int(solver.Value(elective_new_base_count)),
+                    )
+
         # the SR chosen by the solver
         chosen_sr_by_resident = {}
 
@@ -2485,6 +2542,15 @@ def allocate_timetable(
                 deficits[base] = max(
                     0,
                     int(required) - (int(hist_core_map.get(base, 0)) + int(current_core_counts.get(base, 0))),
+                )
+
+            if mcr == DEBUG_HC18_MCR:
+                logger.info(
+                    "HC18 DEBUG %s REPAIR START: hist_core_map=%s current_core_counts=%s deficits=%s",
+                    mcr,
+                    hist_core_map,
+                    current_core_counts,
+                    deficits,
                 )
 
             if not any(deficits.values()):
@@ -2717,6 +2783,23 @@ def allocate_timetable(
                     "GM",
                     exclude_postings=set(CCR_POSTINGS),
                 )
+
+                if mcr == DEBUG_HC18_MCR:
+                    logger.info(
+                        "HC18 DEBUG %s GM REPAIR START: total_gm_done=%d excess_gm_remaining=%d gm_runs=%s",
+                        mcr,
+                        total_gm_done,
+                        excess_gm_remaining,
+                        [
+                            {
+                                "posting": run.get("posting"),
+                                "start": run.get("start"),
+                                "length": run.get("length"),
+                                "blocks": run.get("blocks"),
+                            }
+                            for run in gm_runs
+                        ],
+                    )
 
                 gm_to_core_replaced = 0
                 gm_to_elective_replaced = 0
@@ -3006,6 +3089,13 @@ def allocate_timetable(
                         mcr,
                         gm_to_core_replaced,
                         gm_to_elective_replaced,
+                        excess_gm_remaining,
+                        {k: v for k, v in deficits.items() if v > 0},
+                    )
+                elif mcr == DEBUG_HC18_MCR:
+                    logger.info(
+                        "HC18 DEBUG %s GM REPAIR: no replacements applied; excess_gm_remaining=%d, remaining_core_deficits=%s",
+                        mcr,
                         excess_gm_remaining,
                         {k: v for k, v in deficits.items() if v > 0},
                     )
