@@ -860,14 +860,7 @@ async def prepare_solver_input(form: FormData) -> Dict[str, Any]:
 
     has_previous = bool(previous_response and previous_response.get("residents"))
 
-    logger.info(
-        "[preprocessing] prepare_solver_input path_decision has_pinned=%s has_previous=%s",
-        has_pinned,
-        has_previous,
-    )
-
     if has_pinned and has_previous:
-        logger.info("[preprocessing] using build_pinned_run_input (skips CSV re-parse)")
         solver_input = build_pinned_run_input(
             previous_response=previous_response,
             pinned_mcrs=pinned_mcrs,
@@ -876,7 +869,6 @@ async def prepare_solver_input(form: FormData) -> Dict[str, Any]:
             max_time_in_minutes=form.get("max_time_in_minutes"),
         )
     else:
-        logger.info("[preprocessing] using preprocess_initial_upload (parses CSV files)")
         solver_input = await preprocess_initial_upload(form)
 
     return solver_input

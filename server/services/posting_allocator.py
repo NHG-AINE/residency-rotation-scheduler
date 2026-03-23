@@ -12,7 +12,7 @@ from server.utils import (
     variants_for_base_ci,
     CORE_REQUIREMENTS,
     CCR_POSTINGS,
-)
+)    
 
 
 def allocate_timetable(
@@ -388,17 +388,6 @@ def allocate_timetable(
                     f"deficits_by_base={deficits_by_base}"
                 )
             )
-
-    if not hc18_resident_diagnostics:
-        logger.info(
-            "HC18 PRECHECK: no residents with stage3_finishes=True; HC18 did not activate this run."
-        )
-    else:
-        for diag in hc18_resident_diagnostics:
-            logger.info("HC18 PRECHECK: %s", diag)
-
-    for hint in hc18_feasibility_hints:
-        logger.warning("HC18 PRECHECK: %s", hint)
 
     ###########################################################################
     # CREATE DECISION VARIABLES
@@ -1582,17 +1571,6 @@ def allocate_timetable(
             "elective_new_base_count": current_year_new_elective_count,
         }
 
-    logger.info(
-        "HC18 GM POLICY: eligible residents (stage3_finishes OR has_stage3_blocks) count=%d, mcrs=%s",
-        len(hc18_gm_policy_eligible_mcrs),
-        sorted(hc18_gm_policy_eligible_mcrs),
-    )
-    logger.info(
-        "HC18 GM POLICY: ineligible residents count=%d, mcrs=%s",
-        len(hc18_gm_policy_ineligible_mcrs),
-        sorted(hc18_gm_policy_ineligible_mcrs),
-    )
-
     ###########################################################################
     # DEFINE SOFT CONSTRAINTS WITH PENALTIES
     ###########################################################################
@@ -2434,19 +2412,6 @@ def allocate_timetable(
                 int(solver.Value(debug_vars["gm_excess_assignable"])),
                 int(solver.Value(debug_vars["non_gm_total_deficit"])),
             )
-            if mcr == DEBUG_HC18_MCR:
-                elective_new_base_count = debug_vars.get("elective_new_base_count")
-                if elective_new_base_count is None:
-                    logger.info(
-                        "HC18 DEBUG %s POLICY DETAIL: elective_new_base_count=N/A (stage3_finishes=False)",
-                        mcr,
-                    )
-                else:
-                    logger.info(
-                        "HC18 DEBUG %s POLICY DETAIL: elective_new_base_count=%d",
-                        mcr,
-                        int(solver.Value(elective_new_base_count)),
-                    )
 
         # the SR chosen by the solver
         chosen_sr_by_resident = {}
@@ -2542,15 +2507,6 @@ def allocate_timetable(
                 deficits[base] = max(
                     0,
                     int(required) - (int(hist_core_map.get(base, 0)) + int(current_core_counts.get(base, 0))),
-                )
-
-            if mcr == DEBUG_HC18_MCR:
-                logger.info(
-                    "HC18 DEBUG %s REPAIR START: hist_core_map=%s current_core_counts=%s deficits=%s",
-                    mcr,
-                    hist_core_map,
-                    current_core_counts,
-                    deficits,
                 )
 
             if not any(deficits.values()):
@@ -2783,23 +2739,6 @@ def allocate_timetable(
                     "GM",
                     exclude_postings=set(CCR_POSTINGS),
                 )
-
-                if mcr == DEBUG_HC18_MCR:
-                    logger.info(
-                        "HC18 DEBUG %s GM REPAIR START: total_gm_done=%d excess_gm_remaining=%d gm_runs=%s",
-                        mcr,
-                        total_gm_done,
-                        excess_gm_remaining,
-                        [
-                            {
-                                "posting": run.get("posting"),
-                                "start": run.get("start"),
-                                "length": run.get("length"),
-                                "blocks": run.get("blocks"),
-                            }
-                            for run in gm_runs
-                        ],
-                    )
 
                 gm_to_core_replaced = 0
                 gm_to_elective_replaced = 0
@@ -3083,38 +3022,9 @@ def allocate_timetable(
                             if not matched:
                                 segment_start_idx += 1
 
-                if gm_to_core_replaced > 0 or gm_to_elective_replaced > 0:
-                    logger.info(
-                        "HC18 GM REPAIR: %s gm_to_core_blocks=%d, gm_to_elective_blocks=%d, excess_gm_remaining=%d, remaining_core_deficits=%s",
-                        mcr,
-                        gm_to_core_replaced,
-                        gm_to_elective_replaced,
-                        excess_gm_remaining,
-                        {k: v for k, v in deficits.items() if v > 0},
-                    )
-                elif mcr == DEBUG_HC18_MCR:
-                    logger.info(
-                        "HC18 DEBUG %s GM REPAIR: no replacements applied; excess_gm_remaining=%d, remaining_core_deficits=%s",
-                        mcr,
-                        excess_gm_remaining,
-                        {k: v for k, v in deficits.items() if v > 0},
-                    )
-
             if resident_replacements > 0:
                 remaining_deficits = {k: v for k, v in deficits.items() if v > 0}
-                logger.info(
-                    "HC18 REPAIR: %s replaced %d elective block(s) with core block(s); remaining_core_deficits=%s",
-                    mcr,
-                    resident_replacements,
-                    remaining_deficits,
-                )
                 total_elective_replacements += resident_replacements
-
-        if total_elective_replacements > 0:
-            logger.info(
-                "HC18 REPAIR: total elective->core replacements applied=%d",
-                total_elective_replacements,
-            )
 
         # log OFF usage per resident
         for resident in residents:
