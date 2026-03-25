@@ -173,77 +173,62 @@ const ResidentTimetable: React.FC<Props> = ({
       {}
     );
 
-    // Keep duplicate year rows separate (e.g. Year 1 postings + Year 1 LOA)
-    // by splitting each year into stable non-leave and leave tracks.
-    const groupedPastYear = pastYear.reduce<
-      Record<number, Record<number, ResidentHistory[]>>
-    >((m, a) => {
-      ((m[a.year] ??= {})[a.month_block] ??= []).push(a);
-      return m;
-    }, {});
+    // Build past rows in chronological sequence while preserving each entry's
+    // actual month_block (1..12 => Jul..Jun columns).
+    const currentYearSet = new Set(fallbackCurrentYear);
+    const sequentialPastHistory = allHistory
+      .filter((entry) => !currentYearSet.has(entry))
+      .sort((a, b) => {
+        const careerA = Number(a.career_block);
+        const careerB = Number(b.career_block);
+        if (Number.isFinite(careerA) && Number.isFinite(careerB) && careerA !== careerB) {
+          return careerA - careerB;
+        }
 
-    const pastYearRows: PastYearRow[] = Object.keys(groupedPastYear)
-      .map((yearKey) => Number.parseInt(yearKey, 10))
-      .sort((a, b) => a - b)
-      .flatMap((year) => {
-        const postingsByMonthWithDupes = groupedPastYear[year] ?? {};
-
-        // Build stable tracks: non-leave tracks first, then leave tracks.
-        const maxNonLeaveTracks = Math.max(
-          ...monthLabels.map((_, i) => {
-            const entries = postingsByMonthWithDupes[i + 1] ?? [];
-            return entries.filter((entry) => !coerceBooleanFlag(entry.is_leave)).length;
-          }),
-          0
-        );
-        const maxLeaveTracks = Math.max(
-          ...monthLabels.map((_, i) => {
-            const entries = postingsByMonthWithDupes[i + 1] ?? [];
-            return entries.filter((entry) => coerceBooleanFlag(entry.is_leave)).length;
-          }),
-          0
-        );
-        const totalTracks = maxNonLeaveTracks + maxLeaveTracks;
-
-        return Array.from({ length: totalTracks }, (_, occurrence) => {
-          const postingsByMonth = monthLabels.reduce<BlockMap>((acc, _, i) => {
-            const monthBlock = i + 1;
-            const entries = postingsByMonthWithDupes[monthBlock] ?? [];
-
-            const nonLeaveEntries = entries
-              .filter((entry) => !coerceBooleanFlag(entry.is_leave))
-              .sort((a, b) =>
-                String(a.posting_code || "").localeCompare(
-                  String(b.posting_code || "")
-                )
-              );
-            const leaveEntries = entries
-              .filter((entry) => coerceBooleanFlag(entry.is_leave))
-              .sort((a, b) => {
-                const leaveTypeDelta = String(a.leave_type || "").localeCompare(
-                  String(b.leave_type || "")
-                );
-                if (leaveTypeDelta !== 0) return leaveTypeDelta;
-                return String(a.posting_code || "").localeCompare(
-                  String(b.posting_code || "")
-                );
-              });
-
-            const entry =
-              occurrence < maxNonLeaveTracks
-                ? nonLeaveEntries[occurrence]
-                : leaveEntries[occurrence - maxNonLeaveTracks];
-            if (entry) acc[monthBlock] = entry;
-            return acc;
-          }, {} as BlockMap);
-
-          return {
-            year,
-            occurrence,
-            postingsByMonth,
-          };
-        }).filter((row) => Object.keys(row.postingsByMonth).length > 0);
+        const yearA = Number(a.year);
+        const yearB = Number(b.year);
+        return yearA - yearB;
+        // Preserve CSV order for entries within same year by NOT sorting month_block
       });
+
+    const pastYearRows: PastYearRow[] = [];
+    const yearOccurrenceMap = new Map<number, number>();
+    let currentRow: PastYearRow | null = null;
+
+    sequentialPastHistory.forEach((entry) => {
+      const monthBlock = Number(entry.month_block);
+      if (!Number.isFinite(monthBlock) || monthBlock < 1 || monthBlock > 12) {
+        return;
+      }
+
+      const entryYear = Number(entry.year);
+      const resolvedYear = Number.isFinite(entryYear)
+        ? entryYear
+        : Number.isFinite(residentYearNumber)
+        ? residentYearNumber - 1
+        : 0;
+
+      // Start new row only if year changes or month slot already filled in current row
+      const shouldStartNewRow =
+        !currentRow ||
+        currentRow.year !== resolvedYear ||
+        Boolean(currentRow.postingsByMonth[monthBlock]);
+
+      if (shouldStartNewRow) {
+        const occurrence = yearOccurrenceMap.get(resolvedYear) ?? 0;
+        currentRow = {
+          year: resolvedYear,
+          occurrence,
+          postingsByMonth: {},
+        };
+        pastYearRows.push(currentRow);
+        yearOccurrenceMap.set(resolvedYear, occurrence + 1);
+      }
+
+      if (!currentRow) return;
+
+      currentRow.postingsByMonth[monthBlock] = entry;
+    });
 
     if (import.meta.env.DEV && resident.mcr === "M67294G") {
       // Debug duplicate resident-history mapping for timetable rendering.
@@ -252,7 +237,7 @@ const ResidentTimetable: React.FC<Props> = ({
         residentYearNumber,
         currentYearHistory: currentYear,
         pastYearHistory: pastYear.length,
-        groupedPastYear,
+        sequentialPastHistoryCount: sequentialPastHistory.length,
         pastYearRowCount: pastYearRows.length,
         pastYearRowSummary: pastYearRows.map((row) => ({
           year: row.year,
@@ -334,7 +319,7 @@ const ResidentTimetable: React.FC<Props> = ({
       electivePreferenceBases,
       corePostingBases,
     };
-  }, [apiResponse, resident.mcr]);
+  }, [apiResponse, resident.mcr, resident.resident_year]);
 
   // define formatted year label for current year row
   const currentYearLabel = useMemo(
@@ -655,12 +640,14 @@ const ResidentTimetable: React.FC<Props> = ({
               </TableHeader>
               <TableBody>
                 {/* Past years */}
-                {pastYearRows.map((row) => {
+                {pastYearRows.map((row, rowIndex) => {
                     const yearPostings = row.postingsByMonth;
+                    // Calculate resident year based on row position: each row increments by 1 year
+                    const rowResidentYear = resident.resident_year - (pastYearRows.length - rowIndex);
                     return (
                       <TableRow key={`year-${row.year}-${row.occurrence}`}>
                         <TableCell className="font-medium text-gray-600">
-                          {formatYearLabel(row.year)}
+                          {formatYearLabel(rowResidentYear)}
                         </TableCell>
                         {monthLabels.map((month, index) => {
                           const blockNumber = index + 1;
