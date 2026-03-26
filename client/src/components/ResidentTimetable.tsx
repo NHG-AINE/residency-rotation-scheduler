@@ -192,10 +192,14 @@ const ResidentTimetable: React.FC<Props> = ({
       });
 
     const pastYearRows: PastYearRow[] = [];
-    const yearOccurrenceMap = new Map<number, number>();
-    let currentRow: PastYearRow | null = null;
 
-    sequentialPastHistory.forEach((entry) => {
+    const firstMonthBlock = Number(sequentialPastHistory[0]?.month_block);
+    const firstRowLength =
+      Number.isFinite(firstMonthBlock) && firstMonthBlock >= 1 && firstMonthBlock <= 12
+        ? 13 - firstMonthBlock
+        : 12;
+
+    sequentialPastHistory.forEach((entry, index) => {
       const monthBlock = Number(entry.month_block);
       if (!Number.isFinite(monthBlock) || monthBlock < 1 || monthBlock > 12) {
         return;
@@ -208,26 +212,23 @@ const ResidentTimetable: React.FC<Props> = ({
         ? residentYearNumber - 1
         : 0;
 
-      // Start new row only if year changes or month slot already filled in current row
-      const shouldStartNewRow =
-        !currentRow ||
-        currentRow.year !== resolvedYear ||
-        Boolean(currentRow.postingsByMonth[monthBlock]);
+      // Build rows as:
+      // 1) an initial partial row from the first encountered month to June,
+      // 2) then continuous 12-month rows thereafter.
+      const rowIndex =
+        index < firstRowLength
+          ? 0
+          : 1 + Math.floor((index - firstRowLength) / 12);
 
-      if (shouldStartNewRow) {
-        const occurrence = yearOccurrenceMap.get(resolvedYear) ?? 0;
-        currentRow = {
+      if (!pastYearRows[rowIndex]) {
+        pastYearRows[rowIndex] = {
           year: resolvedYear,
-          occurrence,
+          occurrence: rowIndex,
           postingsByMonth: {},
         };
-        pastYearRows.push(currentRow);
-        yearOccurrenceMap.set(resolvedYear, occurrence + 1);
       }
 
-      if (!currentRow) return;
-
-      currentRow.postingsByMonth[monthBlock] = entry;
+      pastYearRows[rowIndex].postingsByMonth[monthBlock] = entry;
     });
 
     if (import.meta.env.DEV && resident.mcr === "M67294G") {
