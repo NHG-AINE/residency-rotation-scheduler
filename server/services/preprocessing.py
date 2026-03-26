@@ -2,11 +2,18 @@ import copy
 import csv
 import io
 import json
+import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from starlette.datastructures import FormData, UploadFile
+
+
+logger = logging.getLogger(__name__)
+
+# Shared debug resident MCR used across preprocessing checkpoints.
+DEBUG_HISTORY_MCR = "M67294G"
 
 
 CSV_HEADER_SPECS: Dict[str, Dict[str, Any]] = {
@@ -180,6 +187,10 @@ def parse_max_time_in_minutes(raw: Any) -> Optional[int]:
     if value is None or value <= 0:
         return None
     return value
+
+
+def _year_1_blocks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [row for row in rows if parse_int(row.get("year")) == 1]
 
 
 def parse_weightages(
@@ -439,6 +450,7 @@ def _format_residents(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "career_blocks_completed": career_blocks,
             }
         )
+
     return formatted
 
 
@@ -478,8 +490,8 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
 
     # Auto-fix specific duplicate pattern:
     # If the second duplicate of year N block 1 and block 2 are both leave,
-    # and year N+1 block 1 and block 2 do not yet exist, shift those second
-    # duplicates to year N+1 block 1 and 2.
+    # and year N+1 block 1 and block 2 do not yet exist, shift all second
+    # duplicate leave blocks (1-12) to year N+1.
     by_key: Dict[Tuple[str, int, int], List[int]] = {}
     for idx, row in enumerate(formatted):
         mcr = str(row.get("mcr") or "").strip()
@@ -502,8 +514,10 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
             dup_block_1 = by_key.get((mcr, year, 1), [])
             dup_block_2 = by_key.get((mcr, year, 2), [])
 
-            # Need at least a second encounter for both blocks.
-            if len(dup_block_1) < 2 or len(dup_block_2) < 2:
+            # Only apply this legacy auto-fix when there are exactly 2
+            # duplicate tracks for year N. If there are 3+ occurrences,
+            # preserve them as separate rows under the same year.
+            if len(dup_block_1) != 2 or len(dup_block_2) != 2:
                 continue
 
             second_block_1 = formatted[dup_block_1[1]]
@@ -523,8 +537,26 @@ def _format_resident_history(records: List[Dict[str, Any]]) -> List[Dict[str, An
             if has_next_year_block_1 or has_next_year_block_2:
                 continue
 
-            second_block_1["year"] = next_year
-            second_block_2["year"] = next_year
+            # Condition met: shift ALL second duplicate leave blocks (1-12) to next year
+            for month_block in range(1, 13):
+                dup_key = (mcr, year, month_block)
+                if dup_key in by_key and len(by_key[dup_key]) == 2:
+                    second_dup_idx = by_key[dup_key][1]
+                    if parse_boolean_flag(formatted[second_dup_idx].get("is_leave")):
+                        formatted[second_dup_idx]["year"] = next_year
+
+    debug_mcr = DEBUG_HISTORY_MCR
+    resident_rows = [
+        row for row in formatted if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    resident_year_1_blocks = _year_1_blocks(resident_rows)
+    logger.info(
+        "[preprocessing][resident_history][%s] row_count=%s year_1_block_count=%s year_1_blocks=%s",
+        debug_mcr,
+        len(resident_rows),
+        len(resident_year_1_blocks),
+        resident_year_1_blocks,
+    )
 
     return formatted
 
@@ -747,6 +779,17 @@ async def preprocess_initial_upload(form: FormData) -> Dict[str, Any]:
         file_label=CSV_HEADER_SPECS["resident_history"]["label"],
         header_aliases=CSV_HEADER_SPECS["resident_history"]["aliases"],
     )
+
+    debug_mcr = DEBUG_HISTORY_MCR
+    raw_rows_for_mcr = [
+        row for row in history_csv if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    raw_year_1_blocks = _year_1_blocks(raw_rows_for_mcr)
+    print(
+        f"[preprocessing][resident_history_raw][{debug_mcr}] row_count={len(raw_rows_for_mcr)} "
+        f"year_1_block_count={len(raw_year_1_blocks)} year_1_blocks={raw_year_1_blocks}"
+    )
+
     prefs_csv = await _read_csv_upload(
         prefs_upload,
         expected_headers=CSV_HEADER_SPECS["resident_preferences"]["required"],
@@ -854,6 +897,19 @@ def build_pinned_run_input(
         for row in history
         if not parse_boolean_flag(row.get("is_current_year"))
     ]
+
+    debug_mcr = DEBUG_HISTORY_MCR
+    debug_rows = [
+        row for row in resident_history if str(row.get("mcr") or "").strip() == debug_mcr
+    ]
+    year_1_debug_rows = _year_1_blocks(debug_rows)
+    logger.info(
+        "[preprocessing][pinned_run][%s] non_current_history_row_count=%s year_1_block_count=%s year_1_blocks=%s",
+        debug_mcr,
+        len(debug_rows),
+        len(year_1_debug_rows),
+        year_1_debug_rows,
+    )
 
     pinned_assignments: Dict[str, List[Dict[str, Any]]] = {}
     derived_leaves: List[Dict[str, Any]] = []

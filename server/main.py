@@ -25,6 +25,16 @@ from server.services.preprocessing import (
 from server.services.validate import validate_assignment
 from server.utils import MONTH_LABELS
 
+# Configure logging early so preprocessing logs are visible before solver setup.
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+else:
+    root_logger.setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 
