@@ -9,6 +9,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function coerceBooleanFlag(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalised = value.trim().toLowerCase();
+    if (!normalised) return false;
+    if (["true", "1", "yes", "y"].includes(normalised)) return true;
+    if (["false", "0", "no", "n"].includes(normalised)) return false;
+  }
+  return Boolean(value);
+}
+
 const ACADEMIC_YEAR_PATTERN = /^(\d{4})\s*\/\s*(\d{4})$/;
 
 export interface AcademicYearRange {

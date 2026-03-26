@@ -246,6 +246,33 @@ Refer to `# DEFINE HARD CONSTRAINTS` section of the code in [`server/services/po
 - For electives, only assign postings among the resident's elective preferences. 
 - For each resident and each block: If a posting is elective and the posting is **not** in the resident’s elective preference list, then that posting must never be assigned to the resident.
 
+#### HC17 - Stage 3 elective maximum cap (max 5 total)
+- If a resident finishes Stage 3 in the current planning year (`stage3_finishes == True`), then total electives by end of year are capped at 5.
+- The cap is enforced as: `historical_electives + current_year_elective_selections <= 5`.
+- If historical electives already exceed 5, no new electives are assignable in the current year.
+
+#### HC18 - R3 GM-excess replacement policy (hard) + end-of-R3 repair
+- For residents who finish Stage 3 in the current planning year (`stage3_finishes == True`), full end-of-R3 core completion is **not** enforced as a direct hard feasibility equation in the CP-SAT model.
+- Instead, the solver enforces a hard anti-excess rule for GM:
+  - Let `gm_excess_assignable = max(0, current_year_gm_assigned - max(0, 6 - historical_gm_done))`.
+  - If there are unmet **non-GM** core deficits by end of year, `gm_excess_assignable` must be `0`.
+  - If non-GM cores are complete but replacement with electives is still possible (resident has preference-eligible uncompleted elective base and there is room under the stage-3 elective cap), `gm_excess_assignable` must also be `0`.
+- Interpretation: for R3 finishers, the solver must not keep replaceable GM above the base GM requirement when it can be replaced by unmet non-GM cores, or (after cores complete) by eligible electives.
+
+#### End-of-R3 post-solve repair (best effort)
+- After a feasible solve, the allocator runs a repair pass for R3 finishers:
+  - Replace elective runs with core runs (duration-matched) where deficits exist and capacity/rules allow.
+  - Recompute deficits, then compute excess GM (`historical + assigned - 6`).
+  - Replace excess GM segments with unmet non-GM cores first (duration-matched).
+  - If all cores are complete and excess GM remains, replace excess GM segments with resident-preference, non-repeated elective bases (subject to elective cap and duration/capacity rules).
+- This repair is conservative and local (capacity/rule-aware), so it may leave residual excess if no valid swap exists.
+
+### Save-time Validation Alignment
+
+- Manual timetable edits validated through `validate_assignment` still enforce end-of-R3 core completion checks.
+- When the edited schedule reaches/passes end of R3 (`career_blocks_completed + non_leave_assigned_blocks >= 36`), save is rejected if any core requirement remains short.
+- Note: this save-time validation is stricter than the solver's HC18 hard equations (which now focus on GM-excess replaceability plus post-solve repair).
+
 ## Soft Constraints
 
 Refer to `# DEFINE SOFT CONSTRAINTS WITH PENALTIES` section of the code in [`server/services/posting_allocator.py`](./server/services/posting_allocator.py).
@@ -257,7 +284,8 @@ Refer to `# DEFINE SOFT CONSTRAINTS WITH PENALTIES` section of the code in [`ser
   - If elective prefs exist, a second elective (history + current year) earns a bonus (`s2_elective_bonus_terms`).
   - Shortfall uses the same `elective_shortfall_penalty` weight (s2 elective shortfall).
 - Stage 3
-  - Aim for five total electives.
+  - Hard cap from HC17: cannot exceed five total electives by end of Stage 3.
+  - Still encourages hitting exactly five total electives when possible.
   - A slack var (`*_elective_req_unmet`) incurs `elective_shortfall_penalty` when short (s3 elective shortfall).
 
 #### SC2 - Core requirements (stage 3)

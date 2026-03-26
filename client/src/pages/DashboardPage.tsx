@@ -2,7 +2,11 @@ import Papa from "papaparse";
 import { useApiResponseContext } from "@/context/ApiResponseContext";
 import { groupResidentsByYear } from "@/lib/residentOrdering";
 import React, { useEffect, useMemo, useState } from "react";
-import { solve, checkDbStatus, getLatestSession } from "../api/api";
+import {
+  solve,
+  checkDbStatus,
+  getLatestSession,
+} from "../api/api";
 import type {
   ApiResponse,
   CsvFilesState,
@@ -180,10 +184,7 @@ const HomePage: React.FC = () => {
     }
 
     try {
-      const json: ApiResponse & { saved_session_id?: number } = await solve(
-        formData,
-        (progress) => setSolverProgress(progress)
-      );
+      const json: ApiResponse & { saved_session_id?: number } = await solve(formData);
       console.log("API Response:", json);
       if (json.success && json.residents) {
         setApiResponse(json);

@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file. Version numbers follow semantic versioning and dates use `YYYY-MM-DD`.
 
+## [3.0] - 2026-03-26
+### Added
+- Added HC17 to cap elective postings at a maximum of 5 blocks by the end of R3
+- Added HC18 to ensure all required core postings are completed by the end of R3
+- Added backend validation support for HC18 to verify core completion constraints before save/export
+- Added timetable preprocessing metadata to preserve duplicate-month/duplicate-posting display cases
+
+### Changed
+- Strengthened R3 completion allocation logic to prioritize unmet core postings
+- Updated replacement logic so excess GM and electives can be swapped into required core postings where needed
+- Restricted SR posting assignments to allowed late-year windows (blocks 19-30)
+- Updated resident timetable rendering to correctly handle mid-year timetable starts
+- Refined frontend timetable display logic for duplicate block/month scenarios for better schedule accuracy
+
+### Fixed
+- Fixed backend save endpoint issues caused by incorrect variable references that could prevent user data/session save
+- Fixed timetable accuracy issues involving leave blocks (LOA) in preprocessing/postprocessing and display
+
 ## [2.0] - 2026-03-05
 ### Added
 - Added filtering for PlanningOverviewTable to filter data within 6-month windows for better clarity

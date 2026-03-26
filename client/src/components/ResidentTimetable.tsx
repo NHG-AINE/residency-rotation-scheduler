@@ -32,6 +32,7 @@ import type { AcademicYearRange } from "@/lib/utils";
 import {
   areSchedulesEqual,
   cn,
+  coerceBooleanFlag,
   formatAcademicYearLabel,
   moveByInsert,
 } from "@/lib/utils";
@@ -72,6 +73,11 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type BlockMap = Record<number, ResidentHistory>;
+type PastYearRow = {
+  year: number;
+  occurrence: number;
+  postingsByMonth: BlockMap;
+};
 
 interface Props {
   resident: Resident;
@@ -110,7 +116,7 @@ const ResidentTimetable: React.FC<Props> = ({
     electivePreferencePostingSet,
     srPreferenceMap,
     chosenSrBase,
-    pastYearBlockPostings,
+    pastYearRows,
     initialCurrentYearBlockPostings,
     electiveCounts,
     currentYearItemIds,
@@ -131,9 +137,35 @@ const ResidentTimetable: React.FC<Props> = ({
       (h) => h.mcr === resident.mcr
     );
 
-    const currentYear = allHistory.filter((h) => h.is_current_year === true);
-    const pastYear = allHistory.filter((h) => h.is_current_year === false);
-    const initialCurrentYearBlockPostings = currentYear.reduce<BlockMap>(
+    const residentYearNumber = Number(resident.resident_year);
+
+    // Prefer year-aware partitioning so rows are not dropped when
+    // is_current_year is inconsistent in source data.
+    const currentYear = allHistory.filter((h) => {
+      const historyYear = Number(h.year);
+      if (Number.isFinite(residentYearNumber) && Number.isFinite(historyYear)) {
+        return (
+          historyYear === residentYearNumber &&
+          coerceBooleanFlag(h.is_current_year)
+        );
+      }
+      return coerceBooleanFlag(h.is_current_year);
+    });
+
+    const pastYear = allHistory.filter((h) => {
+      const historyYear = Number(h.year);
+      if (Number.isFinite(residentYearNumber) && Number.isFinite(historyYear)) {
+        if (historyYear < residentYearNumber) return true;
+      }
+      return !coerceBooleanFlag(h.is_current_year);
+    });
+
+    const fallbackCurrentYear =
+      currentYear.length === 0
+        ? allHistory.filter((h) => Number(h.year) === residentYearNumber)
+        : currentYear;
+
+    const initialCurrentYearBlockPostings = fallbackCurrentYear.reduce<BlockMap>(
       (m, a) => {
         m[a.month_block] = a;
         return m;
@@ -141,12 +173,84 @@ const ResidentTimetable: React.FC<Props> = ({
       {}
     );
 
-    const pastYearBlockPostings = pastYear.reduce<
-      Record<number, Record<number, ResidentHistory>>
-    >((m, a) => {
-      (m[a.year] ??= {})[a.month_block] = a;
-      return m;
-    }, {});
+    // Build past rows in chronological sequence while preserving each entry's
+    // actual month_block (1..12 => Jul..Jun columns).
+    const currentYearSet = new Set(fallbackCurrentYear);
+    const sequentialPastHistory = allHistory
+      .filter((entry) => !currentYearSet.has(entry))
+      .sort((a, b) => {
+        const careerA = Number(a.career_block);
+        const careerB = Number(b.career_block);
+        if (Number.isFinite(careerA) && Number.isFinite(careerB) && careerA !== careerB) {
+          return careerA - careerB;
+        }
+
+        const yearA = Number(a.year);
+        const yearB = Number(b.year);
+        return yearA - yearB;
+        // Preserve CSV order for entries within same year by NOT sorting month_block
+      });
+
+    const pastYearRows: PastYearRow[] = [];
+
+    const firstMonthBlock = Number(sequentialPastHistory[0]?.month_block);
+    const firstRowLength =
+      Number.isFinite(firstMonthBlock) && firstMonthBlock >= 1 && firstMonthBlock <= 12
+        ? 13 - firstMonthBlock
+        : 12;
+
+    sequentialPastHistory.forEach((entry, index) => {
+      const monthBlock = Number(entry.month_block);
+      if (!Number.isFinite(monthBlock) || monthBlock < 1 || monthBlock > 12) {
+        return;
+      }
+
+      const entryYear = Number(entry.year);
+      const resolvedYear = Number.isFinite(entryYear)
+        ? entryYear
+        : Number.isFinite(residentYearNumber)
+        ? residentYearNumber - 1
+        : 0;
+
+      // Build rows as:
+      // 1) an initial partial row from the first encountered month to June,
+      // 2) then continuous 12-month rows thereafter.
+      const rowIndex =
+        index < firstRowLength
+          ? 0
+          : 1 + Math.floor((index - firstRowLength) / 12);
+
+      if (!pastYearRows[rowIndex]) {
+        pastYearRows[rowIndex] = {
+          year: resolvedYear,
+          occurrence: rowIndex,
+          postingsByMonth: {},
+        };
+      }
+
+      pastYearRows[rowIndex].postingsByMonth[monthBlock] = entry;
+    });
+
+    if (import.meta.env.DEV && resident.mcr === "M67294G") {
+      // Debug duplicate resident-history mapping for timetable rendering.
+      console.debug("[ResidentTimetable][M67294G] pastYear rows", {
+        totalHistory: allHistory.length,
+        residentYearNumber,
+        currentYearHistory: currentYear,
+        pastYearHistory: pastYear.length,
+        sequentialPastHistoryCount: sequentialPastHistory.length,
+        pastYearRowCount: pastYearRows.length,
+        pastYearRowSummary: pastYearRows.map((row) => ({
+          year: row.year,
+          monthCount: Object.keys(row.postingsByMonth).length,
+          leaveMonthCount: Object.values(row.postingsByMonth).filter((entry) =>
+            coerceBooleanFlag(entry?.is_leave)
+          ).length,
+        })),
+        pastYearRows,
+        fallbackCurrentYearCount: fallbackCurrentYear.length,
+      });
+    }
 
     const preferenceMap = (apiResponse?.resident_preferences ?? [])
       .filter((p) => p.mcr === resident.mcr && p.posting_code)
@@ -206,7 +310,7 @@ const ResidentTimetable: React.FC<Props> = ({
       electivePreferencePostingSet,
       srPreferenceMap,
       chosenSrBase,
-      pastYearBlockPostings,
+      pastYearRows,
       initialCurrentYearBlockPostings,
       electiveCounts,
       currentYearItemIds,
@@ -216,7 +320,7 @@ const ResidentTimetable: React.FC<Props> = ({
       electivePreferenceBases,
       corePostingBases,
     };
-  }, [apiResponse, resident.mcr]);
+  }, [apiResponse, resident.mcr, resident.resident_year]);
 
   // define formatted year label for current year row
   const currentYearLabel = useMemo(
@@ -285,7 +389,11 @@ const ResidentTimetable: React.FC<Props> = ({
 
     const fromEntry = currentYearBlockPostings[from];
     const toEntry = currentYearBlockPostings[to];
-    if (fromEntry?.is_leave || toEntry?.is_leave) return;
+    if (
+      coerceBooleanFlag(fromEntry?.is_leave) ||
+      coerceBooleanFlag(toEntry?.is_leave)
+    )
+      return;
 
     setCurrentYearBlockPostings((prev) => {
       // insert and move other postings
@@ -313,7 +421,7 @@ const ResidentTimetable: React.FC<Props> = ({
   const handleSelectPosting = (monthBlock: number, newPostingCode: string) => {
     if (isSaving) return;
     setCurrentYearBlockPostings((prev) => {
-      if (prev[monthBlock]?.is_leave) {
+      if (coerceBooleanFlag(prev[monthBlock]?.is_leave)) {
         return prev;
       }
       const updated: BlockMap = { ...prev } as BlockMap;
@@ -373,9 +481,17 @@ const ResidentTimetable: React.FC<Props> = ({
         return { 
           month_block, 
           posting_code: assignment.posting_code ?? null, 
-          is_leave: assignment.is_leave ?? false
+          is_leave: coerceBooleanFlag(assignment.is_leave),
+          leave_type: assignment.leave_type ?? "",
+          career_block: assignment.career_block,
         }
-      }).filter(Boolean) as { month_block: number; posting_code: string; is_leave: boolean }[];
+      }).filter(Boolean) as {
+        month_block: number;
+        posting_code: string | null;
+        is_leave: boolean;
+        leave_type: string;
+        career_block: number;
+      }[];
 
       const updatedApi = await saveSchedule({
         resident_mcr: resident.mcr,
@@ -418,7 +534,7 @@ const ResidentTimetable: React.FC<Props> = ({
       for (let i = 1; i <= 12; i++) {
         const existing = prev[i];
 
-        if (existing?.is_leave) {
+        if (coerceBooleanFlag(existing?.is_leave)) {
           merged[i] = existing;
         } else if (editedBlocks.has(i) && existing) {
           merged[i] = existing;
@@ -525,18 +641,14 @@ const ResidentTimetable: React.FC<Props> = ({
               </TableHeader>
               <TableBody>
                 {/* Past years */}
-                {Object.keys(pastYearBlockPostings)
-                  .sort(
-                    (a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10)
-                  )
-                  .map((yearKey) => {
-                    const numericYear = Number.parseInt(yearKey, 10);
-                    const yearPostings =
-                      pastYearBlockPostings[numericYear] ?? {};
+                {pastYearRows.map((row, rowIndex) => {
+                    const yearPostings = row.postingsByMonth;
+                    // Calculate resident year based on row position: each row increments by 1 year
+                    const rowResidentYear = resident.resident_year - (pastYearRows.length - rowIndex);
                     return (
-                      <TableRow key={`year-${yearKey}`}>
+                      <TableRow key={`year-${row.year}-${row.occurrence}`}>
                         <TableCell className="font-medium text-gray-600">
-                          {formatYearLabel(numericYear)}
+                          {formatYearLabel(rowResidentYear)}
                         </TableCell>
                         {monthLabels.map((month, index) => {
                           const blockNumber = index + 1;
@@ -545,8 +657,13 @@ const ResidentTimetable: React.FC<Props> = ({
                             ? postingMap[postingAssignment.posting_code]
                             : null;
 
-                          const code = posting?.posting_code;
-                          const isLeave = postingAssignment?.is_leave;
+                          const code =
+                            posting?.posting_code ||
+                            String(postingAssignment?.posting_code || "").trim() ||
+                            undefined;
+                          const isLeave = coerceBooleanFlag(
+                            postingAssignment?.is_leave
+                          );
                           const leaveType = postingAssignment?.leave_type;
 
                           const badgeClass =

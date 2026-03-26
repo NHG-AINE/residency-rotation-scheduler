@@ -25,6 +25,16 @@ from server.services.preprocessing import (
 from server.services.validate import validate_assignment
 from server.utils import MONTH_LABELS
 
+# Configure logging early so preprocessing logs are visible before solver setup.
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+else:
+    root_logger.setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,15 +164,67 @@ async def solve(request: Request):
         solver_input = await prepare_solver_input(form=form)
         solver_payload = _deepcopy(solver_input)
 
-        job = job_manager.create_job()
-        thread = threading.Thread(
-            target=_run_solver_job,
-            args=(job.id, solver_payload, academic_year),
-            daemon=True,
+        # POLLING DISABLED: Run synchronously instead of background job
+        allocator_result = allocate_timetable(
+            residents=solver_payload["residents"],
+            resident_history=solver_payload["resident_history"],
+            resident_preferences=solver_payload["resident_preferences"],
+            resident_sr_preferences=solver_payload["resident_sr_preferences"],
+            postings=solver_payload["postings"],
+            weightages=solver_payload["weightages"],
+            balancing_deviations=solver_payload["balancing_deviations"],
+            resident_leaves=solver_payload.get("resident_leaves", []),
+            pinned_assignments=solver_payload.get("pinned_assignments", []),
+            max_time_in_minutes=solver_payload.get("max_time_in_minutes"),
         )
-        thread.start()
 
-        return {"job_id": job.id, "status": "pending"}
+        if not allocator_result.get("success"):
+            raise HTTPException(
+                status_code=500, detail=allocator_result.get("error", "Solver failed")
+            )
+
+        solver_solution = allocator_result.get("solver_solution")
+        postprocess_payload = _build_postprocess_payload(allocator_result, solver_solution)
+        final_result = compute_postprocess(postprocess_payload)
+
+        if not final_result.get("success"):
+            raise HTTPException(
+                status_code=500, detail=final_result.get("error", "Post-processing failed")
+            )
+
+        # Auto-save to database if available
+        if is_db_available():
+            try:
+                db = SessionLocal()
+                try:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    session_name = f"AY{academic_year} - {timestamp}" if academic_year else f"Session - {timestamp}"
+
+                    new_session = SolverSession(
+                        name=session_name,
+                        academic_year=academic_year,
+                        api_response=final_result,
+                    )
+                    db.add(new_session)
+                    db.commit()
+                    db.refresh(new_session)
+                    final_result["saved_session_id"] = new_session.id
+                finally:
+                    db.close()
+            except Exception as save_err:
+                print(f"Auto-save failed: {save_err}")
+
+        return final_result
+
+        # COMMENTED OUT: Background job with polling
+        # job = job_manager.create_job()
+        # thread = threading.Thread(
+        #     target=_run_solver_job,
+        #     args=(job.id, solver_payload, academic_year),
+        #     daemon=True,
+        # )   
+        # thread.start()
+        # return {"job_id": job.id, "status": "pending"}
 
     except Exception as exc:
         raise HTTPException(
@@ -170,24 +232,25 @@ async def solve(request: Request):
         )
 
 
-@app.get("/api/jobs/{job_id}")
-async def get_job_status(job_id: str):
-    job = job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job.to_dict()
+# POLLING ENDPOINTS COMMENTED OUT - Not needed for synchronous solve
+# @app.get("/api/jobs/{job_id}")
+# async def get_job_status(job_id: str):
+#     job = job_manager.get_job(job_id)
+#     if not job:
+#         raise HTTPException(status_code=404, detail="Job not found")
+#     return job.to_dict()
 
 
-@app.get("/api/jobs/{job_id}/result")
-async def get_job_result(job_id: str):
-    job = job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.status == JobStatus.PENDING or job.status == JobStatus.RUNNING:
-        raise HTTPException(status_code=202, detail="Job still running")
-    if job.status == JobStatus.FAILED:
-        raise HTTPException(status_code=500, detail=job.error or "Job failed")
-    return job.result
+# @app.get("/api/jobs/{job_id}/result")
+# async def get_job_result(job_id: str):
+#     job = job_manager.get_job(job_id)
+#     if not job:
+#         raise HTTPException(status_code=404, detail="Job not found")
+#     if job.status == JobStatus.PENDING or job.status == JobStatus.RUNNING:
+#         raise HTTPException(status_code=202, detail="Job still running")
+#     if job.status == JobStatus.FAILED:
+#         raise HTTPException(status_code=500, detail=job.error or "Job failed")
+#     return job.result
 
 
 @app.post("/api/save")
@@ -198,7 +261,7 @@ async def save(payload: Dict[str, Any] = Body(...)):
     """
     resident_mcr = str(payload.get("resident_mcr") or "").strip()
     if not resident_mcr:
-        raise HTTPException(status_code=400, detail="missing resident_mcr")
+        raise HTTPException(status_code=400, detail="missing resident_mcr") 
 
     # Client must provide the full context from previous API response
     context = payload.get("context") or {}
@@ -247,6 +310,8 @@ async def save(payload: Dict[str, Any] = Body(...)):
         month_block = entry["month_block"]
         posting_code = entry["posting_code"]
         career_block = entry.get("career_block")
+        is_leave = bool(entry.get("is_leave"))
+        leave_type = str(entry.get("leave_type") or "").strip()
         new_entries.append(
             {
                 "mcr": resident_mcr,
@@ -255,8 +320,8 @@ async def save(payload: Dict[str, Any] = Body(...)):
                 "career_block": career_block,
                 "posting_code": posting_code,
                 "is_current_year": True,
-                "is_leave": False,
-                "leave_type": "",
+                "is_leave": is_leave,
+                "leave_type": leave_type,
             }
         )
 
