@@ -19,7 +19,7 @@ This guide explains how to work on Residency Rotation Scheduler (R2S), covering 
 - [Common tasks](#common-tasks)
 - [Troubleshooting](#troubleshooting)
 - [API error responses](#api-error-responses)
-- [Release checklist](#release-checklist)
+- [Release checklist](#deployment-and-release-checklist)
 - [Release/build pointers](#releasebuild-pointers)
 - [Production differences (Replit/hosted)](#production-differences-replithosted)
 
@@ -551,6 +551,42 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
 - Perform the local smoke test above and download `final_timetable.csv` as a sanity check.
 - For hosted runs, build the client (`npm run build`), set `VITE_API_BASE_URL`/`API_BASE_URL`, and confirm DB-backed session endpoints if `DATABASE_URL` is set.
 - Tag the release (e.g., `v1.0.0`) and capture links to any sample datasets used for verification.
+
+### Background Job System on deployed website 
+(This can be disabled when testing on a local laptop, as the solver can run synchronously without any timeout issues)
+
+#### Purpose 
+- To prevent the deployed app from crashing during long solver runs
+- The OR-Tools solver typically takes 60+ minutes to generate a timetable. Without the background job system, the browser would send a request to `/api/solve` and wait for a response. But Replit's load balancer has a ~30 second timeout. If the server doesn't respond within that window, the connection gets killed and the user sees a 502 error, losing all progress.
+
+#### How it works 
+- When a user clicks "Generate Timetable", the backend starts the solver in a background thread and immediately returns a `job_id`
+- The frontend polls `/api/jobs/{job_id}` every 3 seconds to check progress
+- Once complete, it fetches the full results from `/api/jobs/{job_id}/result`
+- Results are auto-saved to the database from the background thread
+
+#### Only one solver job can run at a time
+- The JobManager has a `_solver_busy` flag that prevents concurrent runs
+- A second attempt returns HTTP 429 with "solver is currently running another job"
+- This is intentional as the solver is very CPU-heavy
+
+#### If a job gets stuck:
+- Check status: visit https://im-r2s.replit.app/api/jobs/status in your browser
+- Cancel all jobs: run `curl -X POST https://im-r2s.replit.app/api/jobs/cancel-all` from the Replit Shell
+- Redeploying (jobs are stored in memory, not the database)
+
+#### After redeployment:
+- All in-memory job state is lost, any running job will disappear
+- The frontend polling will get a "job not found" error, which shows as "Solver failed"
+- This is expected; the user just needs to re-run the solver
+
+### Troublehooting on deployed website 
+#### Browser caching
+After publishing, users may still see the old version. A hard refresh (Ctrl+Shift+R / Cmd+Shift+R) is needed to load updated code. 
+
+#### TypeScript strict mode on build
+The deployed build runs `tsc -b` which enforces stricter checks than development. Unused imports will fail the build even though dev mode works fine. Always check for unused imports before publishing.
+
 
 ## Release/build pointers
 
