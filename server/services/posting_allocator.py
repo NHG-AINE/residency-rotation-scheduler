@@ -1039,9 +1039,6 @@ def allocate_timetable(
         stage2_finishes = bool(career_progress[mcr].get("stage2_finishes"))
         stage3_finishes = bool(career_progress[mcr].get("stage3_finishes"))
         
-        # Add to logging set for specific residents
-        is_logging_resident = mcr in ["M67295E", "M67138Z", "M68485F", "M68762F"]
-        
         stages_by_block = career_progress[mcr].get("stages_by_block", {})
         stage1_blocks = [b for b in blocks if stages_by_block.get(b) == 1]
         stage2_blocks = [b for b in blocks if stages_by_block.get(b) == 2]
