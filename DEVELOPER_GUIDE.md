@@ -19,7 +19,8 @@ This guide explains how to work on Residency Rotation Scheduler (R2S), covering 
 - [Common tasks](#common-tasks)
 - [Troubleshooting](#troubleshooting)
 - [API error responses](#api-error-responses)
-- [Release checklist](#deployment-and-release-checklist)
+- [Deployment and Release checklist](#deployment-and-release-checklist)
+- [Notes on deployed website on Replit](#notes-on-deployed-website-on-replit)
 - [Release/build pointers](#releasebuild-pointers)
 - [Production differences (Replit/hosted)](#production-differences-replithosted)
 
@@ -552,7 +553,8 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
 - For hosted runs, build the client (`npm run build`), set `VITE_API_BASE_URL`/`API_BASE_URL`, and confirm DB-backed session endpoints if `DATABASE_URL` is set.
 - Tag the release (e.g., `v1.0.0`) and capture links to any sample datasets used for verification.
 
-### Background Job System on deployed website 
+## Notes on deployed website on Replit 
+### Background Job System
 (This can be disabled when testing on a local laptop, as the solver can run synchronously without any timeout issues)
 
 #### Purpose 
@@ -580,7 +582,7 @@ Refer to `# HELPERS` section of the code in [`server/services/posting_allocator.
 - The frontend polling will get a "job not found" error, which shows as "Solver failed"
 - This is expected; the user just needs to re-run the solver
 
-### Troublehooting on deployed website 
+### Troublehooting 
 #### Browser caching
 After publishing, users may still see the old version. A hard refresh (Ctrl+Shift+R / Cmd+Shift+R) is needed to load updated code. 
 
